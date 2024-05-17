@@ -64,6 +64,7 @@ Mkfile.old
 dkms.conf
 
 # Project-specific files
+*.swp
 .vscode/
 postgres-server/
 build/
