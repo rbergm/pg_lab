@@ -1,3 +1,15 @@
+diff --git a/.gitignore b/.gitignore
+index 4e91139..ec70caa 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -43,3 +43,7 @@ lib*.pc
+ /Release/
+ /tmp_install/
+ /portlock/
++
++# pg_lab specifics
++dist/
++pg.log
 diff --git a/configure b/configure
 index 68e04f4..5731a7c 100755
 --- a/configure
@@ -10,6 +22,129 @@ index 68e04f4..5731a7c 100755
 +#define PG_VERSION_STR "PostgreSQL $PG_VERSION with pg_lab on $host, compiled by $cc_string, `expr $ac_cv_sizeof_void_p \* 8`-bit"
  _ACEOF
  
+ 
+diff --git a/src/backend/commands/explain.c b/src/backend/commands/explain.c
+index 6c2e5c8..055d88a 100644
+--- a/src/backend/commands/explain.c
++++ b/src/backend/commands/explain.c
+@@ -24,6 +24,9 @@
+ #include "nodes/extensible.h"
+ #include "nodes/makefuncs.h"
+ #include "nodes/nodeFuncs.h"
++#include "optimizer/geqo.h"
++#include "optimizer/paths.h"
++#include "optimizer/planner.h"
+ #include "parser/analyze.h"
+ #include "parser/parsetree.h"
+ #include "rewrite/rewriteHandler.h"
+@@ -54,6 +57,17 @@ explain_get_index_name_hook_type explain_get_index_name_hook = NULL;
+ #define X_CLOSE_IMMEDIATE 2
+ #define X_NOWHITESPACE 4
+ 
++const char **current_planner_type = &PLANNER_TYPE_UNSET;
++extern PGDLLIMPORT planner_hook_type planner_hook;
++static planner_hook_type prev_planner_hook;
++static PlannedStmt *planner_explain_interceptor(Query *parse, const char *query_string,
++										 int cursorOptions, ParamListInfo boundParams);
++
++const char **current_join_ordering_type = &PLANNER_TYPE_UNSET;
++extern PGDLLIMPORT join_search_hook_type join_search_hook;
++static join_search_hook_type prev_join_search_hook;
++static RelOptInfo *join_search_explain_interceptor(PlannerInfo *root, int levels_needed, List *initial_rels);
++
+ static void ExplainOneQuery(Query *query, int cursorOptions,
+ 							IntoClause *into, ExplainState *es,
+ 							const char *queryString, ParamListInfo params,
+@@ -155,6 +169,50 @@ static void ExplainYAMLLineStarting(ExplainState *es);
+ static void escape_yaml(StringInfo buf, const char *str);
+ 
+ 
++PlannedStmt *
++planner_explain_interceptor(Query *parse, const char *query_string, int cursorOptions, ParamListInfo boundParams)
++{
++	PlannedStmt *result;
++
++	if (prev_planner_hook)
++	{
++		current_planner_type = &PLANNER_TYPE_CUSTOM;
++		result = (*prev_planner_hook) (parse, query_string, cursorOptions, boundParams);
++	}
++	else
++	{
++		current_planner_type = &PLANNER_TYPE_DEFAULT;
++		result = standard_planner(parse, query_string, cursorOptions, boundParams);
++	}
++
++	return result;
++}
++
++
++RelOptInfo *
++join_search_explain_interceptor(PlannerInfo *root, int levels_needed, List *initial_rels)
++{
++	RelOptInfo *result;
++
++	if (prev_join_search_hook)
++	{
++		current_join_ordering_type = &JOIN_ORDER_TYPE_CUSTOM;
++		result = (*prev_join_search_hook) (root, levels_needed, initial_rels);
++	}
++	else if (enable_geqo && levels_needed >= geqo_threshold)
++	{
++		current_join_ordering_type = &JOIN_ORDER_TYPE_GEQO;
++		result = geqo(root, levels_needed, initial_rels);
++	}
++	else
++	{
++		current_join_ordering_type = &JOIN_ORDER_TYPE_STANDARD;
++		result = standard_join_search(root, levels_needed, initial_rels);
++	}
++
++	return result;
++}
++
+ 
+ /*
+  * ExplainQuery -
+@@ -403,8 +461,18 @@ ExplainOneQuery(Query *query, int cursorOptions,
+ 		INSTR_TIME_SET_CURRENT(planstart);
+ 
+ 		/* plan the query */
++		prev_planner_hook = planner_hook;
++		planner_hook = planner_explain_interceptor;
++		prev_join_search_hook = join_search_hook;
++		join_search_hook = join_search_explain_interceptor;
++
+ 		plan = pg_plan_query(query, queryString, cursorOptions, params);
+ 
++		planner_hook = prev_planner_hook;
++		prev_planner_hook = NULL;
++		join_search_hook = prev_join_search_hook;
++		prev_join_search_hook = NULL;
++
+ 		INSTR_TIME_SET_CURRENT(planduration);
+ 		INSTR_TIME_SUBTRACT(planduration, planstart);
+ 
+@@ -418,6 +486,20 @@ ExplainOneQuery(Query *query, int cursorOptions,
+ 		/* run it (if needed) and produce output */
+ 		ExplainOnePlan(plan, into, es, queryString, params, queryEnv,
+ 					   &planduration, (es->buffers ? &bufusage : NULL));
++
++		ExplainOpenGroup("Optimizer", "Optimizer", true, es);
++		if (es->format == EXPLAIN_FORMAT_TEXT)
++		{
++			ExplainIndentText(es);
++			appendStringInfo(es->str, "Optimizer: planner=%s", *current_planner_type);
++			appendStringInfo(es->str, " joinorder=%s", *current_join_ordering_type);
++		}
++		else
++		{
++			ExplainPropertyText("Planner", *current_planner_type, es);
++			ExplainPropertyText("Join Ordering", *current_join_ordering_type, es);
++		}
++		ExplainCloseGroup("Optimizer", "Optimizer", true, es);
+ 	}
+ }
  
 diff --git a/src/backend/optimizer/path/costsize.c b/src/backend/optimizer/path/costsize.c
 index ef475d9..c56439d 100644
@@ -977,6 +1112,26 @@ index 2ffef1b..06219ae 100644
  	 *
  	 * For now, we don't try to use parallel mode if we're running inside a
  	 * parallel worker.  We might eventually be able to relax this
+diff --git a/src/include/commands/explain.h b/src/include/commands/explain.h
+index 3d3e632..bb777b0 100644
+--- a/src/include/commands/explain.h
++++ b/src/include/commands/explain.h
+@@ -126,4 +126,15 @@ extern void ExplainOpenGroup(const char *objtype, const char *labelname,
+ extern void ExplainCloseGroup(const char *objtype, const char *labelname,
+ 							  bool labeled, ExplainState *es);
+ 
++
++const char* PLANNER_TYPE_UNSET			= "<unset>";
++const char* PLANNER_TYPE_CUSTOM			= "Custom Hook";
++const char* PLANNER_TYPE_DEFAULT 		= "Standard";
++const char* JOIN_ORDER_TYPE_CUSTOM 		= "Custom Hook";
++const char* JOIN_ORDER_TYPE_GEQO 		= "GeQO";
++const char* JOIN_ORDER_TYPE_STANDARD	= "Dynamic Programming";
++
++extern PGDLLIMPORT const char **current_planner_type;
++extern PGDLLIMPORT const char **current_join_ordering_type;
++
+ #endif							/* EXPLAIN_H */
 diff --git a/src/include/optimizer/cost.h b/src/include/optimizer/cost.h
 index 6cf4970..de64da0 100644
 --- a/src/include/optimizer/cost.h

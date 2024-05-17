@@ -4,6 +4,7 @@ extern "C" {
 
 #include "postgres.h"
 
+#include "commands/explain.h"
 #include "lib/stringinfo.h"
 #include "nodes/bitmapset.h"
 #include "optimizer/cost.h"
@@ -17,6 +18,8 @@ extern "C" {
 
 #include "hints.h"
 #include "path_gen.h"
+
+const char* JOIN_ORDER_TYPE_FORCED  = "Forced";
 
 #if PG_VERSION_NUM < 170000
 void destroyStringInfo(StringInfo);
@@ -65,6 +68,9 @@ extern "C" {
     static initial_cost_nestloop_hook_type prev_initial_cost_nestloop_hook = NULL;
     extern final_cost_nestloop_hook_type final_cost_nestloop_hook;
     static final_cost_nestloop_hook_type prev_final_cost_nestloop_hook = NULL;
+
+    extern const char **current_planner_type;
+    extern const char **current_join_ordering_type;
 
     extern PGDLLEXPORT void _PG_init(void);
     extern PGDLLEXPORT void _PG_fini(void);
@@ -179,9 +185,15 @@ hint_aware_planner(Query* parse, const char* query_string, int cursorOptions, Pa
     current_query_string = (char*) query_string;
 
     if (prev_planner_hook)
+    {
+        current_planner_type = &PLANNER_TYPE_CUSTOM;
         result = prev_planner_hook(parse, query_string, cursorOptions, boundParams);
+    }
     else
+    {
+        current_planner_type = &PLANNER_TYPE_DEFAULT;
         result = standard_planner(parse, query_string, cursorOptions, boundParams);
+    }
 
     current_query_string = NULL;
     return result;
@@ -386,17 +398,27 @@ hint_aware_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 
     if (hints->join_order_hint)
     {
+        current_join_ordering_type = &JOIN_ORDER_TYPE_FORCED;
         result = force_join_order(root, levels_needed, initial_rels);
     }
     else
     {
         /* Use default join order optimization strategy */
         if (prev_join_search_hook)
+        {
+            current_join_ordering_type = &JOIN_ORDER_TYPE_CUSTOM;
             result = prev_join_search_hook(root, levels_needed, initial_rels);
+        }
         else if (enable_geqo && levels_needed >= geqo_threshold)
+        {
+            current_join_ordering_type = &JOIN_ORDER_TYPE_GEQO;
             result = geqo(root, levels_needed, initial_rels);
+        }
 		else
+        {
+            current_join_ordering_type = &JOIN_ORDER_TYPE_STANDARD;
 			result = standard_join_search(root, levels_needed, initial_rels);
+        }
     }
 
     free_hints(hints);
