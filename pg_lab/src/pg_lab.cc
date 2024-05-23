@@ -202,14 +202,17 @@ hint_aware_planner(Query* parse, const char* query_string, int cursorOptions, Pa
 extern "C" void
 hint_aware_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
 {
-    PlannerHints *hints = (PlannerHints*) root->join_search_private;
+    PlannerHints *hints;
     bool hint_found = false;
     OperatorHashEntry *hint_entry;
     ListCell *lc;
 
     if (prev_rel_pathlist_hook)
         prev_rel_pathlist_hook(root, rel, rti, rte);
+    if (!root->join_search_private)
+        return;
 
+    hints = (PlannerHints*) root->join_search_private;
     if (!hints->contains_hint)
         return;
 
@@ -275,7 +278,7 @@ hint_aware_set_join_pathlist(PlannerInfo *root, RelOptInfo *joinrel,
                              RelOptInfo *outerrel, RelOptInfo *innerrel,
                              JoinType jointype, JoinPathExtraData *extra)
 {
-    PlannerHints *hints = (PlannerHints*) root->join_search_private;
+    PlannerHints *hints;
     bool hint_found = false;
     OperatorHashEntry *hint_entry;
     ListCell *lc;
@@ -284,7 +287,10 @@ hint_aware_set_join_pathlist(PlannerInfo *root, RelOptInfo *joinrel,
 
     if (prev_join_pathlist_hook)
         prev_join_pathlist_hook(root, joinrel, outerrel, innerrel, jointype, extra);
+    if (!root->join_search_private)
+        return;
 
+    hints = (PlannerHints*) root->join_search_private;
     if (!hints->contains_hint)
         return;
 
@@ -338,43 +344,66 @@ hint_aware_set_join_pathlist(PlannerInfo *root, RelOptInfo *joinrel,
     /* XXX: do we need a fallback in case no paths? */
 }
 
+static double
+set_baserel_size_fallback(PlannerInfo *root, RelOptInfo *rel)
+{
+    if (prev_baserel_size_estimates_hook)
+        return (*prev_baserel_size_estimates_hook)(root, rel);
+    else
+        return standard_set_baserel_size_estimates(root, rel);
+}
+
 extern "C" double
 hint_aware_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel)
 {
-    PlannerHints *hints = (PlannerHints*) root->join_search_private;
+    PlannerHints *hints;
     bool hint_found = false;
     CardinalityHashEntry *hint_entry;
 
     if (prev_baserel_size_estimates_hook)
-        return prev_baserel_size_estimates_hook(root, rel);
+        return set_baserel_size_fallback(root, rel);
+    if (!root->join_search_private)
+        return set_baserel_size_fallback(root, rel);
 
+    hints = (PlannerHints*) root->join_search_private;
     if (!hints->contains_hint)
-        return standard_set_baserel_size_estimates(root, rel);
+        return set_baserel_size_fallback(root, rel);
 
     hint_entry = (CardinalityHashEntry*) hash_search(hints->cardinality_hints, &(rel->relids), HASH_FIND, &hint_found);
     if (!hint_found)
-        return standard_set_baserel_size_estimates(root, rel);
+        return set_baserel_size_fallback(root, rel);
 
     return hint_entry->card;
+}
+
+
+static double
+set_joinrel_size_fallback(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *outer_rel, RelOptInfo *inner_rel, SpecialJoinInfo *sjinfo, List *restrictlist)
+{
+    if (prev_joinrel_size_estimates_hook)
+        return (*prev_joinrel_size_estimates_hook)(root, rel, outer_rel, inner_rel, sjinfo, restrictlist);
+    else
+        return standard_set_joinrel_size_estimates(root, rel, outer_rel, inner_rel, sjinfo, restrictlist);
 }
 
 extern "C" double
 hint_aware_joinrel_size_estimates(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *outer_rel,
                                  RelOptInfo *inner_rel, SpecialJoinInfo *sjinfo, List *restrictlist)
 {
-    PlannerHints *hints = (PlannerHints*) root->join_search_private;
+    PlannerHints *hints;
     bool hint_found = false;
     CardinalityHashEntry *hint_entry;
 
-    if (prev_joinrel_size_estimates_hook)
-        return prev_joinrel_size_estimates_hook(root, rel, outer_rel, inner_rel, sjinfo, restrictlist);
+    if (!root->join_search_private)
+        return set_joinrel_size_fallback(root, rel, outer_rel, inner_rel, sjinfo, restrictlist);
 
+    hints = (PlannerHints*) root->join_search_private;
     if (!hints->contains_hint)
-        return standard_set_joinrel_size_estimates(root, rel, outer_rel, inner_rel, sjinfo, restrictlist);
+        return set_joinrel_size_fallback(root, rel, outer_rel, inner_rel, sjinfo, restrictlist);
 
     hint_entry = (CardinalityHashEntry*) hash_search(hints->cardinality_hints, &(rel->relids), HASH_FIND, &hint_found);
     if (!hint_found)
-        return standard_set_joinrel_size_estimates(root, rel, outer_rel, inner_rel, sjinfo, restrictlist);
+        return set_joinrel_size_fallback(root, rel, outer_rel, inner_rel, sjinfo, restrictlist);
 
     return hint_entry->card;
 }
@@ -393,9 +422,13 @@ hint_aware_make_one_rel_prep(PlannerInfo *root, List *joinlist)
 extern "C" RelOptInfo *
 hint_aware_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 {
-    RelOptInfo *result = NULL;
-    PlannerHints *hints = (PlannerHints*) root->join_search_private;
+    RelOptInfo *result;
+    PlannerHints *hints;
 
+    if (!root->join_search_private)
+        goto default_join_search;
+
+    hints = (PlannerHints*) root->join_search_private;
     if (hints->join_order_hint)
     {
         current_join_ordering_type = &JOIN_ORDER_TYPE_FORCED;
@@ -404,6 +437,8 @@ hint_aware_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
     else
     {
         /* Use default join order optimization strategy */
+        default_join_search:
+
         if (prev_join_search_hook)
         {
             current_join_ordering_type = &JOIN_ORDER_TYPE_CUSTOM;
@@ -421,8 +456,11 @@ hint_aware_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
         }
     }
 
-    free_hints(hints);
-    root->join_search_private = NULL;
+    if (root->join_search_private)
+    {
+        free_hints(hints);
+        root->join_search_private = NULL;
+    }
 
     return result;
 }
@@ -434,7 +472,7 @@ hint_aware_initial_cost_nestloop(PlannerInfo *root,
 								 Path *outer_path, Path *inner_path,
 								 JoinPathExtraData *extra)
 {
-    PlannerHints *hints = (PlannerHints*) root->join_search_private;
+    PlannerHints *hints;
     bool hint_found = false;
     OperatorHashEntry *hint_entry;
     Relids join_relids = EMPTY_BITMAP;
@@ -443,7 +481,10 @@ hint_aware_initial_cost_nestloop(PlannerInfo *root,
         (*prev_initial_cost_nestloop_hook)(root, workspace, jointype, outer_path, inner_path, extra);
     else
         standard_initial_cost_nestloop(root, workspace, jointype, outer_path, inner_path, extra);
+    if (!root->join_search_private)
+        return;
 
+    hints = (PlannerHints*) root->join_search_private;
     if (!hints->contains_hint)
         return;
 
@@ -462,7 +503,7 @@ hint_aware_final_cost_nestloop(PlannerInfo *root, NestPath *path,
                                JoinCostWorkspace *workspace,
 							   JoinPathExtraData *extra)
 {
-    PlannerHints *hints = (PlannerHints*) root->join_search_private;
+    PlannerHints *hints;
     bool hint_found = false;
     OperatorHashEntry *hint_entry;
     Path *raw_path;
@@ -473,6 +514,10 @@ hint_aware_final_cost_nestloop(PlannerInfo *root, NestPath *path,
     else
         standard_final_cost_nestloop(root, path, workspace, extra);
 
+    if (!root->join_search_private)
+        return;
+
+    hints = (PlannerHints*) root->join_search_private;
     if (!hints->contains_hint)
         return;
 

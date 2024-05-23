@@ -265,6 +265,9 @@ void init_hints(PlannerInfo *root, PlannerHints *hints) {
 
 
 void free_hints(PlannerHints *hints) {
+    if (!hints)
+        return;
+
     if (hints->join_order_hint)
         free_join_order(hints->join_order_hint);
 
