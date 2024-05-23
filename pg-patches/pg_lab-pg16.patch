@@ -24,7 +24,7 @@ index 68e04f4..5731a7c 100755
  
  
 diff --git a/src/backend/commands/explain.c b/src/backend/commands/explain.c
-index 6c2e5c8..055d88a 100644
+index 6c2e5c8..5f3f72e 100644
 --- a/src/backend/commands/explain.c
 +++ b/src/backend/commands/explain.c
 @@ -24,6 +24,9 @@
@@ -125,24 +125,29 @@ index 6c2e5c8..055d88a 100644
  		INSTR_TIME_SET_CURRENT(planduration);
  		INSTR_TIME_SUBTRACT(planduration, planstart);
  
-@@ -418,6 +486,20 @@ ExplainOneQuery(Query *query, int cursorOptions,
+@@ -418,6 +486,25 @@ ExplainOneQuery(Query *query, int cursorOptions,
  		/* run it (if needed) and produce output */
  		ExplainOnePlan(plan, into, es, queryString, params, queryEnv,
  					   &planduration, (es->buffers ? &bufusage : NULL));
 +
-+		ExplainOpenGroup("Optimizer", "Optimizer", true, es);
 +		if (es->format == EXPLAIN_FORMAT_TEXT)
 +		{
++			ExplainOpenGroup("Optimizer", "Optimizer", true, es);
 +			ExplainIndentText(es);
 +			appendStringInfo(es->str, "Optimizer: planner=%s", *current_planner_type);
 +			appendStringInfo(es->str, " joinorder=%s", *current_join_ordering_type);
++			ExplainCloseGroup("Optimizer", "Optimizer", true, es);
 +		}
 +		else
 +		{
++			ExplainOpenGroup("OptimizerInfo", NULL, true, es);
++			ExplainOpenGroup("Optimizer", "Optimizer", true, es);
 +			ExplainPropertyText("Planner", *current_planner_type, es);
 +			ExplainPropertyText("Join Ordering", *current_join_ordering_type, es);
++			ExplainCloseGroup("Optimizer", "Optimizer", true, es);
++			ExplainCloseGroup("OptimizerInfo", NULL, true, es);
 +		}
-+		ExplainCloseGroup("Optimizer", "Optimizer", true, es);
++
  	}
  }
  
