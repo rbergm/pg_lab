@@ -17,9 +17,8 @@ extern "C" {
 #include "utils/hsearch.h"
 
 #include "hints.h"
-#include "path_gen.h"
 
-const char* JOIN_ORDER_TYPE_FORCED  = "Forced";
+char* JOIN_ORDER_TYPE_FORCED  = (char*) "Forced";
 
 #if PG_VERSION_NUM < 170000
 void destroyStringInfo(StringInfo);
@@ -52,6 +51,12 @@ extern "C" {
     extern join_search_hook_type join_search_hook;
     static join_search_hook_type prev_join_search_hook = NULL;
 
+    extern add_path_hook_type add_path_hook;
+    static add_path_hook_type prev_add_path_hook = NULL;
+
+    extern add_partial_path_hook_type add_partial_path_hook;
+    static add_partial_path_hook_type prev_add_partial_path_hook = NULL;
+
     extern set_rel_pathlist_hook_type set_rel_pathlist_hook;
     static set_rel_pathlist_hook_type prev_rel_pathlist_hook = NULL;
 
@@ -69,8 +74,8 @@ extern "C" {
     extern final_cost_nestloop_hook_type final_cost_nestloop_hook;
     static final_cost_nestloop_hook_type prev_final_cost_nestloop_hook = NULL;
 
-    extern const char **current_planner_type;
-    extern const char **current_join_ordering_type;
+    extern char **current_planner_type;
+    extern char **current_join_ordering_type;
 
     extern PGDLLEXPORT void _PG_init(void);
     extern PGDLLEXPORT void _PG_fini(void);
@@ -80,11 +85,7 @@ extern "C" {
 
     extern PGDLLEXPORT RelOptInfo *hint_aware_join_search(PlannerInfo*, int, List*);
 
-    extern PGDLLEXPORT void hint_aware_set_rel_pathlist(PlannerInfo*, RelOptInfo*,
-                                                        Index, RangeTblEntry*);
-    extern PGDLLEXPORT void hint_aware_set_join_pathlist(PlannerInfo*, RelOptInfo*,
-                                                         RelOptInfo*, RelOptInfo*,
-                                                         JoinType, JoinPathExtraData*);
+    extern PGDLLEXPORT void hint_aware_add_path(RelOptInfo*, Path*);
 
     extern PGDLLEXPORT double hint_aware_baserel_size_estimates(PlannerInfo*, RelOptInfo*);
     extern PGDLLEXPORT double hint_aware_joinrel_size_estimates(PlannerInfo*, RelOptInfo*,
@@ -103,7 +104,10 @@ extern "C" {
 }
 
 /* Stores the raw query that is currently being optimized in this backend. */
-char *current_query_string;
+char *current_query_string = NULL;
+
+static PlannerInfo *current_planner_root = NULL;
+static PlannerHints *current_hints = NULL;
 
 static RelOptInfo *
 fetch_reloptinfo(PlannerInfo *root, Relids relids)
@@ -141,28 +145,31 @@ force_join_order(PlannerInfo* root, int levels_needed, List* initial_rels)
     /* Initialize join order iterator */
     join_order = ((PlannerHints *) root->join_search_private)->join_order_hint;
     init_join_order_iterator(&iterator, join_order);
-    join_order_iterator_next(&iterator); /* Iterator starts at base rels, skip these*/
+    join_order_iterator_next(&iterator); /* Iterator starts at base rels, skip these */
 
     /* Main "optimization" loop */
     while (!iterator.done)
     {
         foreach (lc, iterator.current_nodes)
         {
-            RelOptInfo *left_rel = NULL;
-            RelOptInfo *right_rel = NULL;
+            RelOptInfo *outer_rel = NULL;
+            RelOptInfo *inner_rel = NULL;
             RelOptInfo *join_rel = NULL;
             current_node = (JoinOrder*) lfirst(lc);
             Assert(current_node->node_type == JOIN_REL);
 
-            left_rel = fetch_reloptinfo(root, current_node->left_child->relids);
-            right_rel = fetch_reloptinfo(root, current_node->right_child->relids);
-            Assert(left_rel);
-            Assert(right_rel);
-            root->join_cur_level = bms_num_members(current_node->relids);
+            outer_rel = fetch_reloptinfo(root, current_node->outer_child->relids);
+            inner_rel = fetch_reloptinfo(root, current_node->inner_child->relids);
+            Assert(outer_rel); Assert(inner_rel);
 
             /* XXX: this way we cannot force join directions. But: do we really need to? */
+            root->join_cur_level = bms_num_members(current_node->relids);
+            join_rel = make_join_rel(root, outer_rel, inner_rel);
 
-            join_rel = make_join_rel(root, left_rel, right_rel);
+            /* Post-process the join_rel same way as standard_join_search() does */
+            generate_partitionwise_join_paths(root, join_rel);
+            if (!bms_equal(join_rel->relids, root->all_query_rels))
+				generate_useful_gather_paths(root, join_rel, false);
             set_cheapest(join_rel);
         }
 
@@ -182,6 +189,8 @@ extern "C" PlannedStmt *
 hint_aware_planner(Query* parse, const char* query_string, int cursorOptions, ParamListInfo boundParams)
 {
     PlannedStmt *result = NULL;
+    current_hints = NULL;
+    current_planner_root = NULL;
     current_query_string = (char*) query_string;
 
     if (prev_planner_hook)
@@ -195,153 +204,91 @@ hint_aware_planner(Query* parse, const char* query_string, int cursorOptions, Pa
         result = standard_planner(parse, query_string, cursorOptions, boundParams);
     }
 
+    current_hints = NULL;
+    current_planner_root = NULL;
     current_query_string = NULL;
     return result;
 }
 
-extern "C" void
-hint_aware_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
+typedef void (*add_path_handler_type) (RelOptInfo *parent_rel, Path *new_path);
+
+/* utility macros inspired by nodeTag and IsA from nodes.h */
+#define pathTag(pathptr) (((const Path*)pathptr)->pathtype)
+#define PathIsA(nodeptr,_type_) (pathTag(nodeptr) == T_ ## _type_)
+#define IsAScanPath(pathptr) (PathIsA(pathptr, SeqScan) || PathIsA(pathptr, IndexScan) || PathIsA(pathptr, BitmapHeapScan))
+#define IsAJoinPath(pathptr) (PathIsA(pathptr, NestLoop) || PathIsA(pathptr, MergeJoin) || PathIsA(pathptr, HashJoin))
+
+void add_path_handler(add_path_handler_type handler, RelOptInfo *parent_rel, Path *new_path)
 {
-    PlannerHints *hints;
-    bool hint_found = false;
+    Relids parent_relids;
+    bool hint_found;
     OperatorHashEntry *hint_entry;
-    ListCell *lc;
+    bool reject_path = false;
 
-    if (prev_rel_pathlist_hook)
-        prev_rel_pathlist_hook(root, rel, rti, rte);
-    if (!root->join_search_private)
-        return;
 
-    hints = (PlannerHints*) root->join_search_private;
-    if (!hints->contains_hint)
-        return;
-
-    hint_entry = (OperatorHashEntry*) hash_search(hints->operator_hints, &(rel->relids), HASH_FIND, &hint_found);
-    if (!hint_found || hint_entry->hint_type == COST_OP)
-        return;
-
-    /*
-     * Delete any existing paths, only force our desired path.
-     *
-     * We really need to re-compute the paths, b/c add_path can already throw away seemingly inferior paths.
-     */
-    if (rel->pathlist != NIL)
+    if (!current_hints || !current_hints->contains_hint)
     {
-        list_free(rel->pathlist);
-        rel->pathlist = NIL;
-    }
-    if (rel->partial_pathlist != NIL)
-    {
-        list_free(rel->partial_pathlist);
-        rel->partial_pathlist = NIL;
+        (*handler)(parent_rel, new_path);
+        return;
     }
 
-    switch (hint_entry->op)
+    if (current_hints->join_order_hint && parent_rel->reloptkind == RELOPT_JOINREL)
     {
-        case SEQSCAN:
-            force_seqscan_paths(root, rel);
-            break;
-        case IDXSCAN:
-            force_idxscan_paths(root, rel);
-            break;
-        default:
-            Assert(false);
+        JoinOrder *jnode;
+        JoinPath *jpath;
+
+        jnode = traverse_join_order(current_hints->join_order_hint, parent_rel->relids);
+        if (!jnode || !IsAJoinPath(new_path))
+        {
+            (*handler)(parent_rel, new_path);
+            return;
+        }
+
+        jpath = (JoinPath*) new_path;
+        if (!bms_equal(jnode->inner_child->relids, jpath->innerjoinpath->parent->relids))
+            return;
+        if (!bms_equal(jnode->outer_child->relids, jpath->outerjoinpath->parent->relids))
+            return;
     }
 
-    /* XXX: do we need a fallback in case no paths? */
+    if (!IsAScanPath(new_path) && !IsAJoinPath(new_path))
+    {
+        (*handler)(parent_rel, new_path);
+        return;
+    }
+
+    hint_entry = (OperatorHashEntry*) hash_search(current_hints->operator_hints, &(parent_rel->relids), HASH_FIND, &hint_found);
+    if (!hint_found || hint_entry->hint_type != FORCED_OP)
+    {
+        (*handler)(parent_rel, new_path);
+        return;
+    }
+
+    if (hint_entry->op == SEQSCAN && !PathIsA(new_path, SeqScan))
+        reject_path = true;
+    else if (hint_entry->op == IDXSCAN && !PathIsA(new_path, IndexScan) && !PathIsA(new_path, BitmapHeapScan))
+        reject_path = true;
+    else if (hint_entry->op == NESTLOOP && !PathIsA(new_path, NestLoop))
+        reject_path = true;
+    else if (hint_entry->op == MERGEJOIN && !PathIsA(new_path, MergeJoin))
+        reject_path = true;
+    else if (hint_entry->op == HASHJOIN && !PathIsA(new_path, HashJoin))
+        reject_path = true;
+
+    if (!reject_path)
+        (*handler)(parent_rel, new_path);
 }
 
 extern "C" void
-enforce_hinted_operator(List *pathlist, OperatorHashEntry *hint)
+hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
 {
-    ListCell *lc;
-    foreach (lc, pathlist)
-    {
-        Path *current_path = (Path*) lfirst(lc);
-        Assert(bms_equal(current_path->parent->relids, hint->relids));
-
-        if (IsA(current_path, SeqScan) && hint->op != SEQSCAN)
-            foreach_delete_current(pathlist, lc);
-        else if (IsA(current_path, IndexPath) && hint->op != IDXSCAN)
-            foreach_delete_current(pathlist, lc);
-        else if (IsA(current_path, NestPath) && hint->op != NESTLOOP)
-            foreach_delete_current(pathlist, lc);
-        else if (IsA(current_path, MergePath) && hint->op != MERGEJOIN)
-            foreach_delete_current(pathlist, lc);
-        else if (IsA(current_path, HashPath) && hint->op != HASHJOIN)
-            foreach_delete_current(pathlist, lc);
-    }
+    add_path_handler(standard_add_path, parent_rel, new_path);
 }
 
 extern "C" void
-hint_aware_set_join_pathlist(PlannerInfo *root, RelOptInfo *joinrel,
-                             RelOptInfo *outerrel, RelOptInfo *innerrel,
-                             JoinType jointype, JoinPathExtraData *extra)
+hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *new_path)
 {
-    PlannerHints *hints;
-    bool hint_found = false;
-    OperatorHashEntry *hint_entry;
-    ListCell *lc;
-    Path *current_path;
-
-
-    if (prev_join_pathlist_hook)
-        prev_join_pathlist_hook(root, joinrel, outerrel, innerrel, jointype, extra);
-    if (!root->join_search_private)
-        return;
-
-    hints = (PlannerHints*) root->join_search_private;
-    if (!hints->contains_hint)
-        return;
-
-    hint_entry = (OperatorHashEntry*) hash_search(hints->operator_hints, &(joinrel->relids), HASH_FIND, &hint_found);
-    if (!hint_found || hint_entry->hint_type == COST_OP)
-        return;
-
-    /*
-     * WTFFFFFFFFFFFFF
-     *
-     * set_join_pathlist is being called twice - once for each join direction (outerrel and innerrel) are swapped
-     * During each call, the optimizer generates nestloop, mergejoin (based on presorted and unsorted inputs) and hashjoin
-     * paths. While calling add_path, an automatica pruning step is included - if the new path is cheaper (or otherwise better)
-     * than the old one, it is removed from the pathlist.
-     *
-     * When we simply copy the current pathlist into our hint structure, this still removes the paths from the hints.
-     * Calling pfree on such Paths leaves them as T_Invalid once we re-read the pathlist in our hint.
-     */
-
-
-    /* Delete any existing paths, only force our desired path */
-    if (joinrel->pathlist != NIL)
-    {
-        list_free(joinrel->pathlist);
-        joinrel->pathlist = NIL;
-    }
-    if (joinrel->partial_pathlist != NIL)
-    {
-        list_free(joinrel->partial_pathlist);
-        joinrel->partial_pathlist = NIL;
-    }
-
-    switch (hint_entry->op)
-    {
-        case NESTLOOP:
-            force_nestloop_paths(root, joinrel, outerrel, innerrel, jointype, extra);
-            force_nestloop_paths(root, joinrel, innerrel, outerrel, jointype, extra);
-            break;
-        case MERGEJOIN:
-            force_mergejoin_paths(root, joinrel, outerrel, innerrel, jointype, extra);
-            force_mergejoin_paths(root, joinrel, innerrel, outerrel, jointype, extra);
-            break;
-        case HASHJOIN:
-            force_hashjoin_paths(root, joinrel, outerrel, innerrel, jointype, extra);
-            force_hashjoin_paths(root, joinrel, innerrel, outerrel, jointype, extra);
-            break;
-        default:
-            Assert(false);
-    }
-
-    /* XXX: do we need a fallback in case no paths? */
+    add_path_handler(standard_add_partial_path, parent_rel, new_path);
 }
 
 static double
@@ -356,20 +303,15 @@ set_baserel_size_fallback(PlannerInfo *root, RelOptInfo *rel)
 extern "C" double
 hint_aware_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel)
 {
-    PlannerHints *hints;
     bool hint_found = false;
     CardinalityHashEntry *hint_entry;
 
     if (prev_baserel_size_estimates_hook)
         return set_baserel_size_fallback(root, rel);
-    if (!root->join_search_private)
+    if (!current_hints || !current_hints->contains_hint)
         return set_baserel_size_fallback(root, rel);
 
-    hints = (PlannerHints*) root->join_search_private;
-    if (!hints->contains_hint)
-        return set_baserel_size_fallback(root, rel);
-
-    hint_entry = (CardinalityHashEntry*) hash_search(hints->cardinality_hints, &(rel->relids), HASH_FIND, &hint_found);
+    hint_entry = (CardinalityHashEntry*) hash_search(current_hints->cardinality_hints, &(rel->relids), HASH_FIND, &hint_found);
     if (!hint_found)
         return set_baserel_size_fallback(root, rel);
 
@@ -390,18 +332,13 @@ extern "C" double
 hint_aware_joinrel_size_estimates(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *outer_rel,
                                  RelOptInfo *inner_rel, SpecialJoinInfo *sjinfo, List *restrictlist)
 {
-    PlannerHints *hints;
     bool hint_found = false;
     CardinalityHashEntry *hint_entry;
 
-    if (!root->join_search_private)
+    if (!current_hints || !current_hints->contains_hint)
         return set_joinrel_size_fallback(root, rel, outer_rel, inner_rel, sjinfo, restrictlist);
 
-    hints = (PlannerHints*) root->join_search_private;
-    if (!hints->contains_hint)
-        return set_joinrel_size_fallback(root, rel, outer_rel, inner_rel, sjinfo, restrictlist);
-
-    hint_entry = (CardinalityHashEntry*) hash_search(hints->cardinality_hints, &(rel->relids), HASH_FIND, &hint_found);
+    hint_entry = (CardinalityHashEntry*) hash_search(current_hints->cardinality_hints, &(rel->relids), HASH_FIND, &hint_found);
     if (!hint_found)
         return set_joinrel_size_fallback(root, rel, outer_rel, inner_rel, sjinfo, restrictlist);
 
@@ -417,50 +354,102 @@ hint_aware_make_one_rel_prep(PlannerInfo *root, List *joinlist)
 
     if (prev_prepare_make_one_rel_hook)
         prev_prepare_make_one_rel_hook(root, joinlist);
+
+    current_planner_root = root;
+    current_hints = hints;
+}
+
+static Index
+locate_reloptinfo(List *candidate_rels, Relids target)
+{
+    RelOptInfo *current_relopt;
+    ListCell *lc;
+    foreach(lc, candidate_rels)
+    {
+        current_relopt = (RelOptInfo*) lfirst(lc);
+        if (bms_equal(current_relopt->relids, target))
+            return foreach_current_index(lc) + 1;
+    }
+
+    Assert(false);
+    return 0;
+}
+
+static RelOptInfo *
+forced_geqo(PlannerInfo *root, int levels_needed, List *initial_rels)
+{
+    int nrels;
+    RelOptInfo *result;
+    JoinOrder *current_node;
+    JoinOrderIterator *join_order_it;
+    int gene_idx;
+    Gene *forced_tour;
+    GeqoPrivateData priv;
+    ListCell *lc;
+
+    root->join_search_private = (void*) &priv;
+    priv.initial_rels = initial_rels;
+
+    nrels = list_length(initial_rels);
+    forced_tour = (Gene*) palloc0(sizeof(Gene) * nrels);
+    join_order_it = (JoinOrderIterator*) palloc0(sizeof(JoinOrderIterator));
+
+    Assert(current_hints->join_order_hint);
+    init_join_order_iterator(join_order_it, current_hints->join_order_hint);
+
+    gene_idx = 0;
+    for (int lc_idx = nrels - 1; lc_idx >= 0; --lc_idx)
+    {
+        current_node = (JoinOrder*) list_nth(join_order_it->current_nodes, lc_idx);
+        Assert(current_node->node_type == BASE_REL);
+        forced_tour[gene_idx++] = locate_reloptinfo(initial_rels, current_node->relids);
+    }
+
+    result = gimme_tree(root, forced_tour, nrels);
+
+    pfree(forced_tour);
+    free_join_order_iterator(join_order_it);
+    root->join_search_private = NULL;
+
+    return result;
+}
+
+static RelOptInfo *
+join_search_fallback(PlannerInfo *root, int levels_needed, List *initial_rels)
+{
+    RelOptInfo *result;
+
+    if (prev_join_search_hook)
+    {
+        current_join_ordering_type = &JOIN_ORDER_TYPE_CUSTOM;
+        result = prev_join_search_hook(root, levels_needed, initial_rels);
+    }
+    else if (enable_geqo && levels_needed >= geqo_threshold)
+    {
+        current_join_ordering_type = &JOIN_ORDER_TYPE_GEQO;
+        result = geqo(root, levels_needed, initial_rels);
+    }
+    else
+    {
+        current_join_ordering_type = &JOIN_ORDER_TYPE_STANDARD;
+        result = standard_join_search(root, levels_needed, initial_rels);
+    }
+
+    return result;
 }
 
 extern "C" RelOptInfo *
 hint_aware_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 {
     RelOptInfo *result;
-    PlannerHints *hints;
 
-    if (!root->join_search_private)
-        goto default_join_search;
-
-    hints = (PlannerHints*) root->join_search_private;
-    if (hints->join_order_hint)
+    if (enable_geqo && levels_needed >= geqo_threshold && current_hints && current_hints->join_order_hint)
     {
         current_join_ordering_type = &JOIN_ORDER_TYPE_FORCED;
-        result = force_join_order(root, levels_needed, initial_rels);
+        result = forced_geqo(root, levels_needed, initial_rels);
     }
     else
-    {
-        /* Use default join order optimization strategy */
-        default_join_search:
-
-        if (prev_join_search_hook)
-        {
-            current_join_ordering_type = &JOIN_ORDER_TYPE_CUSTOM;
-            result = prev_join_search_hook(root, levels_needed, initial_rels);
-        }
-        else if (enable_geqo && levels_needed >= geqo_threshold)
-        {
-            current_join_ordering_type = &JOIN_ORDER_TYPE_GEQO;
-            result = geqo(root, levels_needed, initial_rels);
-        }
-		else
-        {
-            current_join_ordering_type = &JOIN_ORDER_TYPE_STANDARD;
-			result = standard_join_search(root, levels_needed, initial_rels);
-        }
-    }
-
-    if (root->join_search_private)
-    {
-        free_hints(hints);
-        root->join_search_private = NULL;
-    }
+        result = join_search_fallback(root, levels_needed, initial_rels);
 
     return result;
 }
@@ -543,11 +532,11 @@ _PG_init(void)
     prev_join_search_hook = join_search_hook;
     join_search_hook = hint_aware_join_search;
 
-    prev_rel_pathlist_hook = set_rel_pathlist_hook;
-    set_rel_pathlist_hook = hint_aware_set_rel_pathlist;
+    prev_add_path_hook = add_path_hook;
+    add_path_hook = hint_aware_add_path;
 
-    prev_join_pathlist_hook = set_join_pathlist_hook;
-    set_join_pathlist_hook = hint_aware_set_join_pathlist;
+    prev_add_partial_path_hook = add_partial_path_hook;
+    add_partial_path_hook = hint_aware_add_partial_path;
 
     prev_baserel_size_estimates_hook = set_baserel_size_estimates_hook;
     set_baserel_size_estimates_hook = hint_aware_baserel_size_estimates;

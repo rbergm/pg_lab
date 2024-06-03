@@ -22,6 +22,41 @@ void free_join_order(JoinOrder *join_order)
     pfree(join_order);
 }
 
+JoinOrder *
+traverse_join_order(JoinOrder *join_order, Relids node)
+{
+    JoinOrder *outer_child;
+    JoinOrder *inner_child;
+    JoinOrder *result;
+
+    if (bms_equal(join_order->relids, node))
+    {
+        result = join_order;
+    }
+    else  if (join_order->node_type == BASE_REL)
+    {
+        result = NULL;
+    }
+    else
+    {
+        Assert(join_order->node_type == JOIN_REL);
+        if (bms_is_subset(node, join_order->outer_child->relids))
+        {
+            result = traverse_join_order(join_order->outer_child, node);
+        }
+        else if (bms_is_subset(node, join_order->inner_child->relids))
+        {
+            result = traverse_join_order(join_order->inner_child, node);
+        }
+        else
+        {
+            result = NULL;
+        }
+    }
+
+    return result;
+}
+
 void
 init_join_order_iterator(JoinOrderIterator *iterator, JoinOrder *join_order)
 {
