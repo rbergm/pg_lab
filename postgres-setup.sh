@@ -87,7 +87,7 @@ echo ".. Applying pg_lab patches for Postgres $PG_VER_PRETTY"
 git apply $PG_PATCH
 
 echo ".. Building Postgres $PG_VER_PRETTY"
-./configure --prefix=$PG_TARGET_DIR/dist --enable-debug --enable-cassert
+./configure --prefix=$PG_TARGET_DIR/dist --enable-debug --enable-cassert CFLAGS="-O0 -DOPTIMIZER_DEBUG"
 make clean && make -j $MAKE_CORES && make install
 export PATH="$PG_BUILD_DIR/bin:$PATH"
 export LD_LIBRARY_PATH="$PG_BUILD_DIR/lib:$LD_LIBRARY_PATH"
