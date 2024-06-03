@@ -57,7 +57,6 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
             if (ctx->cost_hint()) {
                 ExtractOperatorCost(operator_hint, ctx->cost_hint());
             } else {
-                assert(ctx->forced_hint() != NULL);
                 operator_hint->hint_type = FORCED_OP;
             }
         }
@@ -80,7 +79,6 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
             if (ctx->cost_hint()) {
                 ExtractOperatorCost(operator_hint, ctx->cost_hint());
             } else {
-                assert(ctx->forced_hint() != NULL);
                 operator_hint->hint_type = FORCED_OP;
             }
         }
@@ -122,20 +120,20 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
         JoinOrder *ParseJoinOrderIntermediate(pg_lab::HintBlockParser::Intermediate_join_orderContext *ctx) {
             auto entries = ctx->join_order_entry();
             /* XXX: robustness (array accesses + don't merge nodes with overlapping relations) */
-            auto left_child = ParseJoinOrder(entries.at(0));
-            auto right_child = ParseJoinOrder(entries.at(1));
-            Relids relation_bms = bms_union(left_child->relids, right_child->relids);
+            auto outer_child = ParseJoinOrder(entries.at(0));
+            auto inner_child = ParseJoinOrder(entries.at(1));
+            Relids relation_bms = bms_union(outer_child->relids, inner_child->relids);
 
             JoinOrder *join_order = (JoinOrder*) palloc0(sizeof(JoinOrder));
             join_order->node_type = JOIN_REL;
             join_order->relids = relation_bms;
-            join_order->left_child = left_child;
-            join_order->right_child = right_child;
+            join_order->outer_child = outer_child;
+            join_order->inner_child = inner_child;
 
-            left_child->parent_node = join_order;
-            right_child->parent_node = join_order;
+            outer_child->parent_node = join_order;
+            inner_child->parent_node = join_order;
 
-            auto current_level = std::max(left_child->level, right_child->level);
+            auto current_level = std::max(outer_child->level, inner_child->level);
             join_order->level = current_level + 1;
 
             return join_order;
@@ -187,7 +185,7 @@ void init_hints(PlannerInfo *root, PlannerHints *hints) {
     std::string *query_buffer = new std::string(hints->raw_query);
 
     /* TODO: invoke hint parser, extract and resolve aliases to OIDs */
-    auto hint_block_start = query_buffer->find("/*+");
+    auto hint_block_start = query_buffer->find("/*=pg_lab=");
     auto hint_block_end = query_buffer->find("*/");
     if (hint_block_start == std::string::npos || hint_block_end == std::string::npos)
     {

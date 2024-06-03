@@ -43,8 +43,8 @@ typedef struct JoinOrder
     char* base_identifier;
 
     /* Only set for join rels */
-    JoinOrder *left_child;
-    JoinOrder *right_child;
+    JoinOrder *outer_child;
+    JoinOrder *inner_child;
 
     /* Set on all nodes */
     int level;

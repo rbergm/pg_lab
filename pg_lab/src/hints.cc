@@ -11,8 +11,8 @@ void free_join_order(JoinOrder *join_order)
 {
     if (join_order->node_type == JOIN_REL)
     {
-        free_join_order(join_order->left_child);
-        free_join_order(join_order->right_child);
+        free_join_order(join_order->outer_child);
+        free_join_order(join_order->inner_child);
     }
 
     bms_free(join_order->relids);
@@ -41,8 +41,8 @@ init_join_order_iterator(JoinOrderIterator *iterator, JoinOrder *join_order)
         }
         else
         {
-            node_stack = lappend(node_stack, current_node->left_child);
-            node_stack = lappend(node_stack, current_node->right_child);
+            node_stack = lappend(node_stack, current_node->outer_child);
+            node_stack = lappend(node_stack, current_node->inner_child);
         }
         node_stack = list_delete_first(node_stack);
     }

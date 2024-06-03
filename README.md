@@ -9,12 +9,12 @@ hinting language inspired by [pg_hint_plan](https://github.com/ossc-db/pg_hint_p
 comment blocks of the actual SQL queries:
 
 ```sql
-/*+
+/*=pg_lab=
  Card(a #42000)
 
  JoinOrder(((a b) c))
- IdxScan(b (FORCED))
- NestLoop(a b (FORCED))
+ IdxScan(b)
+ NestLoop(a b)
 
  HashJoin(a b c (COST start=50 total=500))
  MergeJoin(a b c (COST start=25 total=400))

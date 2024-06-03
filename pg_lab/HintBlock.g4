@@ -30,10 +30,10 @@ operator_hint
     ;
 
 join_op_hint
-    : ( NESTLOOP | HASHJOIN | MERGEJOIN ) LPAREN binary_rel_id relation_id* (forced_hint | cost_hint) RPAREN
+    : ( NESTLOOP | HASHJOIN | MERGEJOIN ) LPAREN binary_rel_id relation_id* (forced_hint? | cost_hint) RPAREN
     ;
 scan_op_hint
-    : (SEQSCAN | IDXSCAN) LPAREN relation_id (forced_hint | cost_hint) RPAREN
+    : (SEQSCAN | IDXSCAN) LPAREN relation_id (forced_hint? | cost_hint) RPAREN
     ;
 
 cardinality_hint
@@ -57,7 +57,7 @@ relation_id
 
 // LEXER part
 
-HBLOCK_START : '/*+' ;
+HBLOCK_START : '/*=pg_lab=' ;
 HBLOCK_END   : '*/'  ;
 LPAREN       : '('   ;
 RPAREN       : ')'   ;
