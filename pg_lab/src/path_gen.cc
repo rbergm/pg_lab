@@ -63,6 +63,7 @@ void force_nestloop_paths(PlannerInfo *root, RelOptInfo *joinrel, RelOptInfo *ou
                           JoinType jointype, JoinPathExtraData *extra)
 {
     /* Implementation adapted from match_unsorted_outer in joinpath.c */
+    JoinType save_jointype = jointype;
     ListCell *outer_lc, *inner_lc;
     Path *best_inner = innerrel->cheapest_total_path;
     Path *materialize_path;
@@ -70,13 +71,24 @@ void force_nestloop_paths(PlannerInfo *root, RelOptInfo *joinrel, RelOptInfo *ou
     if (jointype == JOIN_RIGHT || jointype == JOIN_RIGHT_ANTI || jointype == JOIN_FULL)
     {
         /* Postgres cannot apply NLJ for these join types */
-        Assert(false);
+        elog(ERROR, "cannot apply NLJ for join type: %d",
+				 (int) jointype);
     }
+
+    if (jointype == JOIN_UNIQUE_OUTER || jointype == JOIN_UNIQUE_INNER)
+        jointype = JOIN_INNER;
 
     if (PATH_PARAM_BY_REL(best_inner, outerrel))
         best_inner = NULL;
 
-    if (enable_material && best_inner != NULL && !ExecMaterializesOutput(best_inner->pathtype))
+    if (save_jointype == JOIN_UNIQUE_INNER)
+	{
+		if (best_inner == NULL)
+			return;
+		best_inner = (Path *) create_unique_path(root, innerrel, best_inner, extra->sjinfo);
+		Assert(best_inner);
+	}
+    else if (enable_material && best_inner != NULL && !ExecMaterializesOutput(best_inner->pathtype))
     {
         /* Try materialized version of the inner path */
         materialize_path = (Path*) create_material_path(innerrel, best_inner);
@@ -90,7 +102,28 @@ void force_nestloop_paths(PlannerInfo *root, RelOptInfo *joinrel, RelOptInfo *ou
         if (PATH_PARAM_BY_REL(outerpath, innerrel))
             continue;
 
+        if (save_jointype == JOIN_UNIQUE_OUTER)
+		{
+			if (outerpath != outerrel->cheapest_total_path)
+				continue;
+			outerpath = (Path *) create_unique_path(root, outerrel,
+													outerpath, extra->sjinfo);
+			Assert(outerpath);
+		}
+
         merge_pathkeys = build_join_pathkeys(root, joinrel, jointype, outerpath->pathkeys);
+
+        if (save_jointype == JOIN_UNIQUE_INNER)
+		{
+			try_nestloop_path(root,
+							  joinrel,
+							  outerpath,
+							  best_inner,
+							  merge_pathkeys,
+							  jointype,
+							  extra);
+            continue;
+		}
 
         foreach (inner_lc, innerrel->cheapest_parameterized_paths)
         {
@@ -109,8 +142,8 @@ void force_nestloop_paths(PlannerInfo *root, RelOptInfo *joinrel, RelOptInfo *ou
             try_nestloop_path(root, joinrel, outerpath, materialize_path, merge_pathkeys, jointype, extra);
     }
 
-    if (SUPPORTS_PARALLEL(joinrel, outerrel, jointype))
-        consider_parallel_nestloop(root, joinrel, outerrel, innerrel, jointype, extra);
+    if (SUPPORTS_PARALLEL(joinrel, outerrel, save_jointype))
+        consider_parallel_nestloop(root, joinrel, outerrel, innerrel, save_jointype, extra);
 }
 
 void force_mergejoin_paths(PlannerInfo *root, RelOptInfo *joinrel,
@@ -118,6 +151,7 @@ void force_mergejoin_paths(PlannerInfo *root, RelOptInfo *joinrel,
                            JoinType jointype, JoinPathExtraData *extra)
 {
     /* Implementation adapted from match_unsorted_outer() in joinpath.c */
+    JoinType save_jointype = jointype;
     ListCell *outer_lc, *inner_lc;
     Path *best_inner = innerrel->cheapest_total_path;
     bool useallclauses = false;
@@ -125,40 +159,68 @@ void force_mergejoin_paths(PlannerInfo *root, RelOptInfo *joinrel,
     /* First up, generate mergejoin paths based on unsorted inner and outer */
     sort_inner_and_outer(root, joinrel, outerrel, innerrel, jointype, extra);
 
-    /* Now, try to generate mergejoin paths with pre-sorted inputs */
-
-    if (jointype == JOIN_UNIQUE_OUTER || best_inner == NULL)
-    {
-        /* Postgres cannot apply Merge join for these join types */
-        Assert(false);
-    }
+    /* Now, try to generate mergejoin paths with pre-sorted inputs. This is based on match_unsorted_outer */
 
     if (jointype == JOIN_FULL || jointype == JOIN_RIGHT || jointype == JOIN_RIGHT_ANTI)
         useallclauses = true;
+    if (jointype == JOIN_UNIQUE_OUTER || jointype == JOIN_UNIQUE_INNER)
+        jointype = JOIN_INNER;
 
 
     if (PATH_PARAM_BY_REL(best_inner, outerrel))
-        return;
+        best_inner = NULL;
 
-    foreach (outer_lc, outerrel->pathlist)
+    if (save_jointype == JOIN_UNIQUE_INNER)
+	{
+		/* No way to do this with an inner path parameterized by outer rel */
+		if (best_inner == NULL)
+			return;
+		best_inner = (Path *) create_unique_path(root, innerrel, best_inner, extra->sjinfo);
+		Assert(best_inner);
+	}
+
+    if (save_jointype != JOIN_UNIQUE_INNER && best_inner)
     {
-        Path *outerpath = (Path*) lfirst(outer_lc);
-        List *merge_pathkeys;
+        foreach (outer_lc, outerrel->pathlist)
+        {
+            Path *outerpath = (Path*) lfirst(outer_lc);
+            List *merge_pathkeys;
 
-        if (PATH_PARAM_BY_REL(outerpath, innerrel))
-            continue;
+            if (PATH_PARAM_BY_REL(outerpath, innerrel))
+                continue;
 
-        merge_pathkeys = build_join_pathkeys(root, joinrel, jointype, outerpath->pathkeys);
+            if (save_jointype == JOIN_UNIQUE_OUTER)
+            {
+                if (outerpath != outerrel->cheapest_total_path)
+                    continue;
+                outerpath = (Path *) create_unique_path(root, outerrel,
+                                                        outerpath, extra->sjinfo);
+                Assert(outerpath);
+            }
 
-        generate_mergejoin_paths(root, joinrel,
-                                 innerrel, outerpath,
-                                 jointype, extra,
-                                 useallclauses, best_inner,
-                                 merge_pathkeys, false);
+            merge_pathkeys = build_join_pathkeys(root, joinrel, jointype, outerpath->pathkeys);
+
+            generate_mergejoin_paths(root, joinrel,
+                                     innerrel, outerpath,
+                                     save_jointype, extra,
+                                     useallclauses, best_inner,
+                                     merge_pathkeys, false);
+        }
     }
 
-    if (SUPPORTS_PARALLEL(joinrel, outerrel, jointype))
-        consider_parallel_mergejoin(root, joinrel, outerrel, innerrel, jointype, extra, best_inner);
+
+    if (SUPPORTS_PARALLEL(joinrel, outerrel, save_jointype))
+    {
+        if (best_inner == NULL || !best_inner->parallel_safe)
+        {
+            if (save_jointype == JOIN_UNIQUE_INNER)
+                return;
+            best_inner = get_cheapest_parallel_safe_total_inner(innerrel->pathlist);
+        }
+
+        if (best_inner)
+            consider_parallel_mergejoin(root, joinrel, outerrel, innerrel, jointype, extra, best_inner);
+    }
 }
 
 
