@@ -24,7 +24,7 @@ index 68e04f4..5731a7c 100755
  
  
 diff --git a/src/backend/commands/explain.c b/src/backend/commands/explain.c
-index 6c2e5c8..5f3f72e 100644
+index 6c2e5c8..0fb38f1 100644
 --- a/src/backend/commands/explain.c
 +++ b/src/backend/commands/explain.c
 @@ -24,6 +24,9 @@
@@ -41,13 +41,13 @@ index 6c2e5c8..5f3f72e 100644
  #define X_CLOSE_IMMEDIATE 2
  #define X_NOWHITESPACE 4
  
-+const char **current_planner_type = &PLANNER_TYPE_UNSET;
++char	  **current_planner_type = &PLANNER_TYPE_UNSET;
 +extern PGDLLIMPORT planner_hook_type planner_hook;
 +static planner_hook_type prev_planner_hook;
 +static PlannedStmt *planner_explain_interceptor(Query *parse, const char *query_string,
-+										 int cursorOptions, ParamListInfo boundParams);
++												int cursorOptions, ParamListInfo boundParams);
 +
-+const char **current_join_ordering_type = &PLANNER_TYPE_UNSET;
++char	  **current_join_ordering_type = &PLANNER_TYPE_UNSET;
 +extern PGDLLIMPORT join_search_hook_type join_search_hook;
 +static join_search_hook_type prev_join_search_hook;
 +static RelOptInfo *join_search_explain_interceptor(PlannerInfo *root, int levels_needed, List *initial_rels);
@@ -55,10 +55,17 @@ index 6c2e5c8..5f3f72e 100644
  static void ExplainOneQuery(Query *query, int cursorOptions,
  							IntoClause *into, ExplainState *es,
  							const char *queryString, ParamListInfo params,
-@@ -155,6 +169,50 @@ static void ExplainYAMLLineStarting(ExplainState *es);
+@@ -155,6 +169,57 @@ static void ExplainYAMLLineStarting(ExplainState *es);
  static void escape_yaml(StringInfo buf, const char *str);
  
  
++char	   *PLANNER_TYPE_UNSET = "<unset>";
++char	   *PLANNER_TYPE_CUSTOM = "Custom Hook";
++char	   *PLANNER_TYPE_DEFAULT = "Standard";
++char	   *JOIN_ORDER_TYPE_CUSTOM = "Custom Hook";
++char	   *JOIN_ORDER_TYPE_GEQO = "GeQO";
++char	   *JOIN_ORDER_TYPE_STANDARD = "Dynamic Programming";
++
 +PlannedStmt *
 +planner_explain_interceptor(Query *parse, const char *query_string, int cursorOptions, ParamListInfo boundParams)
 +{
@@ -106,26 +113,32 @@ index 6c2e5c8..5f3f72e 100644
  
  /*
   * ExplainQuery -
-@@ -403,8 +461,18 @@ ExplainOneQuery(Query *query, int cursorOptions,
+@@ -403,7 +468,23 @@ ExplainOneQuery(Query *query, int cursorOptions,
  		INSTR_TIME_SET_CURRENT(planstart);
  
  		/* plan the query */
+-		plan = pg_plan_query(query, queryString, cursorOptions, params);
 +		prev_planner_hook = planner_hook;
 +		planner_hook = planner_explain_interceptor;
 +		prev_join_search_hook = join_search_hook;
 +		join_search_hook = join_search_explain_interceptor;
 +
- 		plan = pg_plan_query(query, queryString, cursorOptions, params);
++		PG_TRY();
++		{
++			plan = pg_plan_query(query, queryString, cursorOptions, params);
++		}
++		PG_FINALLY();
++		{
++			planner_hook = prev_planner_hook;
++			prev_planner_hook = NULL;
++			join_search_hook = prev_join_search_hook;
++			prev_join_search_hook = NULL;
++		}
++		PG_END_TRY();
  
-+		planner_hook = prev_planner_hook;
-+		prev_planner_hook = NULL;
-+		join_search_hook = prev_join_search_hook;
-+		prev_join_search_hook = NULL;
-+
  		INSTR_TIME_SET_CURRENT(planduration);
  		INSTR_TIME_SUBTRACT(planduration, planstart);
- 
-@@ -418,6 +486,25 @@ ExplainOneQuery(Query *query, int cursorOptions,
+@@ -418,6 +499,25 @@ ExplainOneQuery(Query *query, int cursorOptions,
  		/* run it (if needed) and produce output */
  		ExplainOnePlan(plan, into, es, queryString, params, queryEnv,
  					   &planduration, (es->buffers ? &bufusage : NULL));
@@ -1075,6 +1088,42 @@ index 9e488eb..8c1f680 100644
  hash_inner_and_outer(PlannerInfo *root,
  					 RelOptInfo *joinrel,
  					 RelOptInfo *outerrel,
+diff --git a/src/backend/optimizer/path/joinrels.c b/src/backend/optimizer/path/joinrels.c
+index 015a0b3..796755c 100644
+--- a/src/backend/optimizer/path/joinrels.c
++++ b/src/backend/optimizer/path/joinrels.c
+@@ -22,6 +22,7 @@
+ #include "partitioning/partbounds.h"
+ #include "utils/memutils.h"
+ 
++make_join_rel_hook_type make_join_rel_hook = NULL;
+ 
+ static void make_rels_by_clause_joins(PlannerInfo *root,
+ 									  RelOptInfo *old_rel,
+@@ -687,6 +688,23 @@ join_is_legal(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
+  */
+ RelOptInfo *
+ make_join_rel(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
++{
++	RelOptInfo *result;
++
++	if (make_join_rel_hook)
++	{
++		result = (*make_join_rel_hook) (root, rel1, rel2);
++	}
++	else
++	{
++		result = standard_make_join_rel(root, rel1, rel2);
++	}
++	return result;
++}
++
++
++RelOptInfo *
++standard_make_join_rel(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
+ {
+ 	Relids		joinrelids;
+ 	SpecialJoinInfo *sjinfo;
 diff --git a/src/backend/optimizer/plan/planmain.c b/src/backend/optimizer/plan/planmain.c
 index 7afd434..28984b8 100644
 --- a/src/backend/optimizer/plan/planmain.c
@@ -1117,24 +1166,108 @@ index 2ffef1b..06219ae 100644
  	 *
  	 * For now, we don't try to use parallel mode if we're running inside a
  	 * parallel worker.  We might eventually be able to relax this
+diff --git a/src/backend/optimizer/util/pathnode.c b/src/backend/optimizer/util/pathnode.c
+index bd23226..c1aaa00 100644
+--- a/src/backend/optimizer/util/pathnode.c
++++ b/src/backend/optimizer/util/pathnode.c
+@@ -44,6 +44,9 @@ typedef enum
+ 	COSTS_DIFFERENT				/* neither path dominates the other on cost */
+ } PathCostComparison;
+ 
++add_path_hook_type add_path_hook = NULL;
++add_partial_path_hook_type add_partial_path_hook = NULL;
++
+ /*
+  * STD_FUZZ_FACTOR is the normal fuzz factor for compare_path_costs_fuzzily.
+  * XXX is it worth making this user-controllable?  It provides a tradeoff
+@@ -365,8 +368,26 @@ set_cheapest(RelOptInfo *parent_rel)
+ 	parent_rel->cheapest_parameterized_paths = parameterized_paths;
+ }
+ 
++
+ /*
+  * add_path
++ * 	  Consider a potential implementation path for the specified parent rel,
++ * 	  and add it to the rel's pathlist if it is worthy of consideration.
++ *
++ * 	  The precise policy followed by add_path is determined by the add_path_hook.
++ * 	  The default policy is specified by standard_add_path.
++ */
++void
++add_path(RelOptInfo *parent_rel, Path *new_path)
++{
++	if (add_path_hook)
++		(*add_path_hook) (parent_rel, new_path);
++	else
++		standard_add_path(parent_rel, new_path);
++}
++
++/*
++ * standard_add_path
+  *	  Consider a potential implementation path for the specified parent rel,
+  *	  and add it to the rel's pathlist if it is worthy of consideration.
+  *	  A path is worthy if it has a better sort order (better pathkeys) or
+@@ -424,7 +445,7 @@ set_cheapest(RelOptInfo *parent_rel)
+  * Returns nothing, but modifies parent_rel->pathlist.
+  */
+ void
+-add_path(RelOptInfo *parent_rel, Path *new_path)
++standard_add_path(RelOptInfo *parent_rel, Path *new_path)
+ {
+ 	bool		accept_new = true;	/* unless we find a superior old path */
+ 	int			insert_at = 0;	/* where to insert new item */
+@@ -711,6 +732,25 @@ add_path_precheck(RelOptInfo *parent_rel,
+ 	return true;
+ }
+ 
++/*
++ * add_partial_path
++ *    Similar to add_path, but for partial paths.
++ * 	  Consider a potential implementation path for the specified parent rel,
++ * 	  and add it to the rel's partial_pathlist if it is worthy of consideration.
++ *
++ * 	  The precise policy followed by add_partial_path is determined by the
++ *    add_partial_path_hook. The default policy is specified by
++ *    standard_add_partial_path.
++ */
++void
++add_partial_path(RelOptInfo *parent_rel, Path *new_path)
++{
++	if (add_partial_path_hook)
++		(*add_partial_path_hook) (parent_rel, new_path);
++	else
++		standard_add_partial_path(parent_rel, new_path);
++}
++
+ /*
+  * add_partial_path
+  *	  Like add_path, our goal here is to consider whether a path is worthy
+@@ -751,7 +791,7 @@ add_path_precheck(RelOptInfo *parent_rel,
+  *	  referenced by partial BitmapHeapPaths.
+  */
+ void
+-add_partial_path(RelOptInfo *parent_rel, Path *new_path)
++standard_add_partial_path(RelOptInfo *parent_rel, Path *new_path)
+ {
+ 	bool		accept_new = true;	/* unless we find a superior old path */
+ 	int			insert_at = 0;	/* where to insert new item */
 diff --git a/src/include/commands/explain.h b/src/include/commands/explain.h
-index 3d3e632..bb777b0 100644
+index 3d3e632..b6b3e71 100644
 --- a/src/include/commands/explain.h
 +++ b/src/include/commands/explain.h
-@@ -126,4 +126,15 @@ extern void ExplainOpenGroup(const char *objtype, const char *labelname,
+@@ -126,4 +126,14 @@ extern void ExplainOpenGroup(const char *objtype, const char *labelname,
  extern void ExplainCloseGroup(const char *objtype, const char *labelname,
  							  bool labeled, ExplainState *es);
  
++extern PGDLLIMPORT char *PLANNER_TYPE_UNSET;
++extern PGDLLIMPORT char *PLANNER_TYPE_CUSTOM;
++extern PGDLLIMPORT char *PLANNER_TYPE_DEFAULT;
++extern PGDLLIMPORT char *JOIN_ORDER_TYPE_CUSTOM;
++extern PGDLLIMPORT char *JOIN_ORDER_TYPE_GEQO;
++extern PGDLLIMPORT char *JOIN_ORDER_TYPE_STANDARD;
 +
-+const char* PLANNER_TYPE_UNSET			= "<unset>";
-+const char* PLANNER_TYPE_CUSTOM			= "Custom Hook";
-+const char* PLANNER_TYPE_DEFAULT 		= "Standard";
-+const char* JOIN_ORDER_TYPE_CUSTOM 		= "Custom Hook";
-+const char* JOIN_ORDER_TYPE_GEQO 		= "GeQO";
-+const char* JOIN_ORDER_TYPE_STANDARD	= "Dynamic Programming";
-+
-+extern PGDLLIMPORT const char **current_planner_type;
-+extern PGDLLIMPORT const char **current_join_ordering_type;
++extern PGDLLIMPORT char **current_planner_type;
++extern PGDLLIMPORT char **current_join_ordering_type;
 +
  #endif							/* EXPLAIN_H */
 diff --git a/src/include/optimizer/cost.h b/src/include/optimizer/cost.h
@@ -1380,19 +1513,51 @@ index 6cf4970..de64da0 100644
 +												  List *restrictlist);
 +
  #endif							/* COST_H */
+diff --git a/src/include/optimizer/pathnode.h b/src/include/optimizer/pathnode.h
+index 001e75b..7fa7c8b 100644
+--- a/src/include/optimizer/pathnode.h
++++ b/src/include/optimizer/pathnode.h
+@@ -18,6 +18,12 @@
+ #include "nodes/pathnodes.h"
+ 
+ 
++typedef void (*add_path_hook_type) (RelOptInfo *parent_rel, Path *new_path);
++extern add_path_hook_type add_path_hook;
++
++typedef void (*add_partial_path_hook_type) (RelOptInfo *parent_rel, Path *new_path);
++extern add_partial_path_hook_type add_partial_path_hook;
++
+ /*
+  * prototypes for pathnode.c
+  */
+@@ -27,10 +33,12 @@ extern int	compare_fractional_path_costs(Path *path1, Path *path2,
+ 										  double fraction);
+ extern void set_cheapest(RelOptInfo *parent_rel);
+ extern void add_path(RelOptInfo *parent_rel, Path *new_path);
++extern void standard_add_path(RelOptInfo *parent_rel, Path *new_path);
+ extern bool add_path_precheck(RelOptInfo *parent_rel,
+ 							  Cost startup_cost, Cost total_cost,
+ 							  List *pathkeys, Relids required_outer);
+ extern void add_partial_path(RelOptInfo *parent_rel, Path *new_path);
++extern void standard_add_partial_path(RelOptInfo *parent_rel, Path *new_path);
+ extern bool add_partial_path_precheck(RelOptInfo *parent_rel,
+ 									  Cost total_cost, List *pathkeys);
+ 
 diff --git a/src/include/optimizer/paths.h b/src/include/optimizer/paths.h
-index 50bc3b5..3b6c627 100644
+index 50bc3b5..97f5408 100644
 --- a/src/include/optimizer/paths.h
 +++ b/src/include/optimizer/paths.h
-@@ -47,7 +47,6 @@ typedef RelOptInfo *(*join_search_hook_type) (PlannerInfo *root,
+@@ -47,6 +47,9 @@ typedef RelOptInfo *(*join_search_hook_type) (PlannerInfo *root,
  											  List *initial_rels);
  extern PGDLLIMPORT join_search_hook_type join_search_hook;
  
--
++typedef RelOptInfo *(*make_join_rel_hook_type) (PlannerInfo *root,
++												RelOptInfo *rel1, RelOptInfo *rel2);
++extern PGDLLIMPORT make_join_rel_hook_type make_join_rel_hook;
+ 
  extern RelOptInfo *make_one_rel(PlannerInfo *root, List *joinlist);
  extern RelOptInfo *standard_join_search(PlannerInfo *root, int levels_needed,
- 										List *initial_rels);
-@@ -97,6 +96,41 @@ extern void add_paths_to_joinrel(PlannerInfo *root, RelOptInfo *joinrel,
+@@ -97,6 +100,41 @@ extern void add_paths_to_joinrel(PlannerInfo *root, RelOptInfo *joinrel,
  								 JoinType jointype, SpecialJoinInfo *sjinfo,
  								 List *restrictlist);
  
@@ -1434,6 +1599,15 @@ index 50bc3b5..3b6c627 100644
  /*
   * joinrels.c
   *	  routines to determine which relations to join
+@@ -104,6 +142,8 @@ extern void add_paths_to_joinrel(PlannerInfo *root, RelOptInfo *joinrel,
+ extern void join_search_one_level(PlannerInfo *root, int level);
+ extern RelOptInfo *make_join_rel(PlannerInfo *root,
+ 								 RelOptInfo *rel1, RelOptInfo *rel2);
++extern RelOptInfo *standard_make_join_rel(PlannerInfo *root,
++										  RelOptInfo *rel1, RelOptInfo *rel2);
+ extern Relids add_outer_joins_to_relids(PlannerInfo *root, Relids input_relids,
+ 										SpecialJoinInfo *sjinfo,
+ 										List **pushed_down_joins);
 diff --git a/src/include/optimizer/planmain.h b/src/include/optimizer/planmain.h
 index 5fc9007..822a9ac 100644
 --- a/src/include/optimizer/planmain.h
