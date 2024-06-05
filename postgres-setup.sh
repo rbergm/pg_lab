@@ -15,6 +15,7 @@ MAKE_CORES=$(($(nproc --all) / 2))
 ENABLE_REMOTE_ACCESS="false"
 USER_PASSWORD=""
 STOP_AFTER="false"
+PG_BUILDOPTS=""
 
 show_help() {
     NEWLINE="\n\t\t\t\t"
@@ -25,6 +26,7 @@ show_help() {
     echo -e "-d | --dir <directory>\t\tInstall Postgres server to the designated directory (postgres-server by default)."
     echo -e "-p | --port <port number>\tConfigure the Postgres server to listen on the given port (5432 by default)."
     echo -e "--remote-password <password>\tEnable remote access for the current user, based on the given password.${NEWLINE}Remote access is disabled if no password is provided."
+    echo -e "--debug\t\t\t\tProduce a debug build of the Postgres server"
     echo -e "--stop\t\t\t\tStop the Postgres server process after installation and setup finished"
     exit 1
 }
@@ -66,6 +68,10 @@ while [ $# -gt 0 ] ; do
             shift
             shift
             ;;
+        --debug)
+            PG_BUILDOPTS="--enable-debug --enable-cassert CFLAGS=\"-O0 -DOPTIMIZER_DEBUG\""
+            shift
+            ;;
         --stop)
             STOP_AFTER="true"
             shift
@@ -87,7 +93,7 @@ echo ".. Applying pg_lab patches for Postgres $PG_VER_PRETTY"
 git apply $PG_PATCH
 
 echo ".. Building Postgres $PG_VER_PRETTY"
-./configure --prefix=$PG_TARGET_DIR/dist --enable-debug --enable-cassert CFLAGS="-O0 -DOPTIMIZER_DEBUG"
+./configure --prefix=$PG_TARGET_DIR/dist $PG_BUILDOPTS
 make clean && make -j $MAKE_CORES && make install
 export PATH="$PG_BUILD_DIR/bin:$PATH"
 export LD_LIBRARY_PATH="$PG_BUILD_DIR/lib:$LD_LIBRARY_PATH"
@@ -105,6 +111,7 @@ cd $PG_TARGET_DIR
 
 
 echo ".. Installing pg_lab extension"
+mkdir -p $WD/pg_lab/build
 cd $WD/pg_lab/build
 cmake ..
 make -j $MAKE_CORES
