@@ -22,8 +22,9 @@ set(ANTLR_TAG 4.13.1)           # to specify the GitHub tag for the jar too
 set(DISABLE_WARNINGS ON)        # Antlr gives a few deprecation warnings for me
 set(ANTLR_BUILD_CPP_TESTS OFF)  # to avoid creating dist folder
 
-set(ANTLR_EXECUTABLE "build/antlr-${ANTLR_TAG}-complete.jar") # a local path for antlr.jar
+set(ANTLR_EXECUTABLE "${CMAKE_CURRENT_BINARY_DIR}/antlr-${ANTLR_TAG}-complete.jar") # a local path for antlr.jar
 if(NOT EXISTS "${ANTLR_EXECUTABLE}")
+    message(STATUS "Downloading antlr-${ANTLR_TAG}-complete.jar to ${ANTLR_EXECUTABLE}")
     file(
         DOWNLOAD
         "https://www.antlr.org/download/antlr-${ANTLR_TAG}-complete.jar"
