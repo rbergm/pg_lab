@@ -54,6 +54,7 @@ typedef struct JoinOrder
 #define join_order_is_root(join_order) ((join_order)->parent_node == NULL)
 
 extern JoinOrder* traverse_join_order(JoinOrder *join_order, Relids node);
+extern bool is_linear_join_order(JoinOrder *join_order);
 extern void free_join_order(JoinOrder *join_order);
 
 typedef struct JoinOrderIterator

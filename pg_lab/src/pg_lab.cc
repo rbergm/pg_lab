@@ -350,7 +350,6 @@ hint_aware_make_one_rel_prep(PlannerInfo *root, List *joinlist)
 {
     PlannerHints *hints = (PlannerHints*) palloc0(sizeof(PlannerHints));
     init_hints(root, hints);
-    root->join_search_private = (void*) hints;
 
     if (prev_prepare_make_one_rel_hook)
         prev_prepare_make_one_rel_hook(root, joinlist);
@@ -442,11 +441,16 @@ extern "C" RelOptInfo *
 hint_aware_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 {
     RelOptInfo *result;
+    bool can_geqo;
 
-    if (enable_geqo && levels_needed >= geqo_threshold && current_hints && current_hints->join_order_hint)
+    if (current_hints && current_hints->join_order_hint)
     {
         current_join_ordering_type = &JOIN_ORDER_TYPE_FORCED;
-        result = forced_geqo(root, levels_needed, initial_rels);
+        can_geqo = enable_geqo && levels_needed >= geqo_threshold && is_linear_join_order(current_hints->join_order_hint);
+        if (can_geqo)
+            result = forced_geqo(root, levels_needed, initial_rels);
+        else
+            result = standard_join_search(root, levels_needed, initial_rels);
     }
     else
         result = join_search_fallback(root, levels_needed, initial_rels);

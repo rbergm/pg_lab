@@ -57,6 +57,21 @@ traverse_join_order(JoinOrder *join_order, Relids node)
     return result;
 }
 
+bool
+is_linear_join_order(JoinOrder* join_order)
+{
+    if (join_order->node_type == BASE_REL)
+        return true;
+
+    Assert(join_order->node_type == JOIN_REL);
+    if (join_order->outer_child->node_type != BASE_REL &&
+        join_order->inner_child->node_type != BASE_REL)
+        return false;
+
+    return is_linear_join_order(join_order->outer_child) &&
+           is_linear_join_order(join_order->inner_child);
+}
+
 void
 init_join_order_iterator(JoinOrderIterator *iterator, JoinOrder *join_order)
 {
