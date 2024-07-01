@@ -41,7 +41,7 @@ cardinality_hint
     ;
 
 cost_hint
-    : LPAREN COST STARTUP EQ FLOAT TOTAL EQ FLOAT RPAREN
+    : LPAREN COST STARTUP EQ cost TOTAL EQ cost RPAREN
     ;
 
 forced_hint
@@ -53,6 +53,11 @@ binary_rel_id
     ;
 relation_id
     : REL_ID
+    ;
+
+cost
+    : FLOAT
+    | INT
     ;
 
 // LEXER part

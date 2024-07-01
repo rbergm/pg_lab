@@ -87,14 +87,13 @@ Within the hint block, three types of hints are supported:
   order instead - unless the `JoinOrder` hint is used as well.
 
   Supported operators are `SeqScan` and `IdxScan` for base relations, e.g. `SeqScan(A)` or `IdxScan(B)`, and `NestLoop`,
-  `MergeJoin` or `HashJoin` for joins, e.g. `MergeJoin(A B)` or `NestLoop(A B C)`.
+  `MergeJoin` or `HashJoin` for joins, e.g. `MergeJoin(A B)` or `NestLoop(A B C)`. The cardinality _must_ be an integer.
 
   You can also add an optional `(FORCED)` clause after the tables to contrast this hint from a cost hint (see next bullet
   point): `HashJoin(A B C (FORCED))`.
 - `<operator>(<tables> (COST start=<float> total=<float>))` overwrites the native cost estimate for the given operator. The
   same operator and tables syntax as for the operator-forcing hint is used. Additionally, `BitmapScan` can be used to cost
-  bitmap scans, in which case the cost corresponds to the actual heap operator. Both startup and total cost _must_ be floating
-  point numbers, i.e. trailing zeros have to be used if necessary (`1.0` instead of `1`).
+  bitmap scans, in which case the cost corresponds to the actual heap operator.
   For example, `NestLoop(A B (COST start=4.2 total=42.0))`.
 
 Tables can be referred to using either their full names, or aliases.

@@ -103,8 +103,9 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
             cost_hint->node_type = JOIN_REL;
             auto join_costs = &cost_hint->costs.join_cost;
             auto cost_ctx = ctx->cost_hint();
-            auto startup_cost = std::atof(cost_ctx->FLOAT().at(0)->getText().c_str());
-            auto total_cost = std::atof(cost_ctx->FLOAT().at(1)->getText().c_str());
+            auto startup_cost = ParseCost(cost_ctx->cost().at(0));
+            auto total_cost = ParseCost(cost_ctx->cost().at(1));
+
             if (ctx->NESTLOOP()) {
                 join_costs->nestloop_startup = startup_cost;
                 join_costs->nestloop_total = total_cost;
@@ -125,8 +126,10 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
             cost_hint->node_type = BASE_REL;
             auto scan_costs = &cost_hint->costs.scan_cost;
             auto cost_ctx = ctx->cost_hint();
-            auto startup_cost = std::atof(cost_ctx->FLOAT().at(0)->getText().c_str());
-            auto total_cost = std::atof(cost_ctx->FLOAT().at(1)->getText().c_str());
+            auto total_cost_hint = cost_ctx->cost().at(1);
+            auto startup_cost = ParseCost(cost_ctx->cost().at(0));
+            auto total_cost = ParseCost(cost_ctx->cost().at(1));
+
             if (ctx->SEQSCAN()) {
                 scan_costs->seqscan_startup = startup_cost;
                 scan_costs->seqscan_total = total_cost;
@@ -139,6 +142,17 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
 
             } else {
                 /* XXX: appropriate error handling */
+            }
+        }
+
+        Cost ParseCost(pg_lab::HintBlockParser::CostContext *ctx) {
+            if (ctx->INT()) {
+                return std::atoi(ctx->INT()->getText().c_str());
+            } else if (ctx->FLOAT()) {
+                return std::atof(ctx->FLOAT()->getText().c_str());
+            } else {
+                /* XXX: appropriate error handling */
+                return -1;
             }
         }
 
