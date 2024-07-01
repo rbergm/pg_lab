@@ -69,10 +69,29 @@ extern "C" {
     extern set_joinrel_size_estimates_hook_type set_joinrel_size_estimates_hook;
     static set_joinrel_size_estimates_hook_type prev_joinrel_size_estimates_hook = NULL;
 
+    extern cost_seqscan_hook_type cost_seqscan_hook;
+    static cost_seqscan_hook_type prev_cost_seqscan_hook = NULL;
+
+    extern cost_index_hook_type cost_index_hook;
+    static cost_index_hook_type prev_cost_index_hook = NULL;
+
+    extern cost_bitmap_heap_scan_hook_type cost_bitmap_heap_scan_hook;
+    static cost_bitmap_heap_scan_hook_type prev_cost_bitmap_heap_scan_hook = NULL;
+
     extern initial_cost_nestloop_hook_type initial_cost_nestloop_hook;
     static initial_cost_nestloop_hook_type prev_initial_cost_nestloop_hook = NULL;
     extern final_cost_nestloop_hook_type final_cost_nestloop_hook;
     static final_cost_nestloop_hook_type prev_final_cost_nestloop_hook = NULL;
+
+    extern initial_cost_hashjoin_hook_type initial_cost_hashjoin_hook;
+    static initial_cost_hashjoin_hook_type prev_initial_cost_hashjoin_hook = NULL;
+    extern final_cost_hashjoin_hook_type final_cost_hashjoin_hook;
+    static final_cost_hashjoin_hook_type prev_final_cost_hashjoin_hook = NULL;
+
+    extern initial_cost_mergejoin_hook_type initial_cost_mergejoin_hook;
+    static initial_cost_mergejoin_hook_type prev_initial_cost_mergejoin_hook = NULL;
+    extern final_cost_mergejoin_hook_type final_cost_mergejoin_hook;
+    static final_cost_mergejoin_hook_type prev_final_cost_mergejoin_hook = NULL;
 
     extern char **current_planner_type;
     extern char **current_join_ordering_type;
@@ -258,7 +277,7 @@ void add_path_handler(add_path_handler_type handler, RelOptInfo *parent_rel, Pat
     }
 
     hint_entry = (OperatorHashEntry*) hash_search(current_hints->operator_hints, &(parent_rel->relids), HASH_FIND, &hint_found);
-    if (!hint_found || hint_entry->hint_type != FORCED_OP)
+    if (!hint_found)
     {
         (*handler)(parent_rel, new_path);
         return;
@@ -459,36 +478,100 @@ hint_aware_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 }
 
 extern "C" void
+hint_aware_cost_seqscan(Path *path, PlannerInfo *root, RelOptInfo *baserel, ParamPathInfo *param_info)
+{
+    bool hint_found = false;
+    CostHashEntry *hint_entry;
+
+    if (prev_cost_seqscan_hook)
+        (*prev_cost_seqscan_hook)(path, root, baserel, param_info);
+    else
+        standard_cost_seqscan(path, root, baserel, param_info);
+
+    if (!current_hints || !current_hints->contains_hint)
+        return;
+
+    hint_entry = (CostHashEntry*) hash_search(current_hints->cost_hints, &(baserel->relids), HASH_FIND, &hint_found);
+    if (!hint_found)
+        return;
+
+    path->startup_cost = hint_entry->costs.scan_cost.seqscan_startup;
+    path->total_cost = hint_entry->costs.scan_cost.seqscan_total;
+
+}
+
+extern "C" void
+hint_aware_cost_idxscan(IndexPath *path, PlannerInfo *root, double loop_count, bool partial_path)
+{
+    bool hint_found = false;
+    CostHashEntry *hint_entry;
+
+    if (prev_cost_index_hook)
+        (*prev_cost_index_hook)(path, root, loop_count, partial_path);
+    else
+        standard_cost_index(path, root, loop_count, partial_path);
+
+    if (!current_hints || !current_hints->contains_hint)
+        return;
+
+    hint_entry = (CostHashEntry*) hash_search(current_hints->cost_hints, &(path->path.parent->relids), HASH_FIND, &hint_found);
+    if (!hint_found)
+        return;
+
+    path->path.startup_cost = hint_entry->costs.scan_cost.idxscan_startup;
+    path->path.total_cost = hint_entry->costs.scan_cost.idxscan_total;
+}
+
+extern "C" void
+hint_aware_cost_bitmapscan(Path *path, PlannerInfo *root, RelOptInfo *baserel, ParamPathInfo *param_info,
+                           Path *bitmapqual, double loop_count)
+{
+    bool hint_found = false;
+    CostHashEntry *hint_entry;
+
+    if (prev_cost_bitmap_heap_scan_hook)
+        (*prev_cost_bitmap_heap_scan_hook)(path, root, baserel, param_info, bitmapqual, loop_count);
+    else
+        standard_cost_bitmap_heap_scan(path, root, baserel, param_info, bitmapqual, loop_count);
+
+    if (!current_hints || !current_hints->contains_hint)
+        return;
+
+    hint_entry = (CostHashEntry*) hash_search(current_hints->cost_hints, &(baserel->relids), HASH_FIND, &hint_found);
+    if (!hint_found)
+        return;
+
+    path->startup_cost = hint_entry->costs.scan_cost.bitmap_startup;
+    path->total_cost = hint_entry->costs.scan_cost.bitmap_total;
+}
+
+extern "C" void
 hint_aware_initial_cost_nestloop(PlannerInfo *root,
                                  JoinCostWorkspace *workspace,
 								 JoinType jointype,
 								 Path *outer_path, Path *inner_path,
 								 JoinPathExtraData *extra)
 {
-    PlannerHints *hints;
     bool hint_found = false;
-    OperatorHashEntry *hint_entry;
+    CostHashEntry *hint_entry;
     Relids join_relids = EMPTY_BITMAP;
 
     if (prev_initial_cost_nestloop_hook)
         (*prev_initial_cost_nestloop_hook)(root, workspace, jointype, outer_path, inner_path, extra);
     else
         standard_initial_cost_nestloop(root, workspace, jointype, outer_path, inner_path, extra);
-    if (!root->join_search_private)
-        return;
 
-    hints = (PlannerHints*) root->join_search_private;
-    if (!hints->contains_hint)
+    if (!current_hints || !current_hints->contains_hint)
         return;
 
     join_relids = bms_add_members(join_relids, outer_path->parent->relids);
     join_relids = bms_add_members(join_relids, inner_path->parent->relids);
-    hint_entry = (OperatorHashEntry*) hash_search(hints->operator_hints, &join_relids, HASH_FIND, &hint_found);
-    if (!hint_found || hint_entry->hint_type == FORCED_OP)
+    hint_entry = (CostHashEntry*) hash_search(current_hints->cost_hints, &join_relids, HASH_FIND, &hint_found);
+    if (!hint_found)
         return;
 
-    workspace->startup_cost = hint_entry->startup_cost;
-    workspace->total_cost = hint_entry->total_cost;
+    workspace->startup_cost = hint_entry->costs.join_cost.nestloop_startup;
+    workspace->total_cost = hint_entry->costs.join_cost.nestloop_total;
 }
 
 extern "C" void
@@ -496,9 +579,8 @@ hint_aware_final_cost_nestloop(PlannerInfo *root, NestPath *path,
                                JoinCostWorkspace *workspace,
 							   JoinPathExtraData *extra)
 {
-    PlannerHints *hints;
     bool hint_found = false;
-    OperatorHashEntry *hint_entry;
+    CostHashEntry *hint_entry;
     Path *raw_path;
     Relids relids;
 
@@ -507,22 +589,136 @@ hint_aware_final_cost_nestloop(PlannerInfo *root, NestPath *path,
     else
         standard_final_cost_nestloop(root, path, workspace, extra);
 
-    if (!root->join_search_private)
-        return;
-
-    hints = (PlannerHints*) root->join_search_private;
-    if (!hints->contains_hint)
+    if (!current_hints || !current_hints->contains_hint)
         return;
 
     raw_path = &(path->jpath.path);
-    hint_entry = (OperatorHashEntry*) hash_search(hints->operator_hints, &(raw_path->parent->relids), HASH_FIND, &hint_found);
-    if (!hint_found || hint_entry->hint_type == FORCED_OP)
+    hint_entry = (CostHashEntry*) hash_search(current_hints->cost_hints, &(raw_path->parent->relids), HASH_FIND, &hint_found);
+    if (!hint_found)
         return;
 
-    raw_path->startup_cost = hint_entry->startup_cost;
-    raw_path->total_cost = hint_entry->total_cost;
+    raw_path->startup_cost = hint_entry->costs.join_cost.nestloop_startup;
+    raw_path->total_cost = hint_entry->costs.join_cost.nestloop_total;
 }
 
+
+extern "C" void
+hint_aware_initial_cost_hashjoin(PlannerInfo *root,
+                                 JoinCostWorkspace *workspace,
+								 JoinType jointype,
+								 List *hashclauses,
+								 Path *outer_path, Path *inner_path,
+								 JoinPathExtraData *extra,
+								 bool parallel_hash)
+{
+    bool hint_found = false;
+    CostHashEntry *hint_entry;
+    Relids join_relids = EMPTY_BITMAP;
+
+    if (prev_initial_cost_hashjoin_hook)
+        (*prev_initial_cost_hashjoin_hook)(root, workspace, jointype, hashclauses, outer_path, inner_path, extra, parallel_hash);
+    else
+        standard_initial_cost_hashjoin(root, workspace, jointype, hashclauses, outer_path, inner_path, extra, parallel_hash);
+
+    if (!current_hints || !current_hints->contains_hint)
+        return;
+
+    join_relids = bms_add_members(join_relids, outer_path->parent->relids);
+    join_relids = bms_add_members(join_relids, inner_path->parent->relids);
+    hint_entry = (CostHashEntry*) hash_search(current_hints->cost_hints, &join_relids, HASH_FIND, &hint_found);
+    if (!hint_found)
+        return;
+
+    workspace->startup_cost = hint_entry->costs.join_cost.hash_startup;
+    workspace->total_cost = hint_entry->costs.join_cost.hash_total;
+}
+
+extern "C" void
+hint_aware_final_cost_hashjoin(PlannerInfo *root, HashPath *path,
+                               JoinCostWorkspace *workspace,
+                               JoinPathExtraData *extra)
+{
+    bool hint_found = false;
+    CostHashEntry *hint_entry;
+    Path *raw_path;
+    Relids relids;
+
+    if (prev_final_cost_hashjoin_hook)
+        (*prev_final_cost_hashjoin_hook)(root, path, workspace, extra);
+    else
+        standard_final_cost_hashjoin(root, path, workspace, extra);
+
+    if (!current_hints || !current_hints->contains_hint)
+        return;
+
+    raw_path = &(path->jpath.path);
+    hint_entry = (CostHashEntry*) hash_search(current_hints->cost_hints, &(raw_path->parent->relids), HASH_FIND, &hint_found);
+    if (!hint_found)
+        return;
+
+    raw_path->startup_cost = hint_entry->costs.join_cost.hash_startup;
+    raw_path->total_cost = hint_entry->costs.join_cost.hash_total;
+}
+
+extern "C" void
+hint_aware_intial_cost_mergejoin(PlannerInfo *root,
+                                 JoinCostWorkspace *workspace,
+                                 JoinType jointype,
+                                 List *mergeclauses,
+                                 Path *outer_path, Path *inner_path,
+                                 List *outersortkeys, List *innersortkeys,
+                                 JoinPathExtraData *extra)
+{
+    bool hint_found = false;
+    CostHashEntry *hint_entry;
+    Relids join_relids = EMPTY_BITMAP;
+
+    if (prev_initial_cost_mergejoin_hook)
+        (*prev_initial_cost_mergejoin_hook)(root, workspace, jointype, mergeclauses, outer_path, inner_path,
+                                            outersortkeys, innersortkeys, extra);
+    else
+        standard_initial_cost_mergejoin(root, workspace, jointype, mergeclauses, outer_path, inner_path,
+                                        outersortkeys, innersortkeys, extra);
+
+    if (!current_hints || !current_hints->contains_hint)
+        return;
+
+    join_relids = bms_add_members(join_relids, outer_path->parent->relids);
+    join_relids = bms_add_members(join_relids, inner_path->parent->relids);
+    hint_entry = (CostHashEntry*) hash_search(current_hints->cost_hints, &join_relids, HASH_FIND, &hint_found);
+    if (!hint_found)
+        return;
+
+    workspace->startup_cost = hint_entry->costs.join_cost.merge_startup;
+    workspace->total_cost = hint_entry->costs.join_cost.merge_total;
+}
+
+extern "C" void
+hint_aware_final_cost_mergejoin(PlannerInfo *root, MergePath *path,
+                                JoinCostWorkspace *workspace,
+                                JoinPathExtraData *extra)
+{
+    bool hint_found = false;
+    CostHashEntry *hint_entry;
+    Path *raw_path;
+    Relids relids;
+
+    if (prev_final_cost_mergejoin_hook)
+        (*prev_final_cost_mergejoin_hook)(root, path, workspace, extra);
+    else
+        standard_final_cost_mergejoin(root, path, workspace, extra);
+
+    if (!current_hints || !current_hints->contains_hint)
+        return;
+
+    raw_path = &(path->jpath.path);
+    hint_entry = (CostHashEntry*) hash_search(current_hints->cost_hints, &(raw_path->parent->relids), HASH_FIND, &hint_found);
+    if (!hint_found)
+        return;
+
+    raw_path->startup_cost = hint_entry->costs.join_cost.merge_startup;
+    raw_path->total_cost = hint_entry->costs.join_cost.merge_total;
+}
 
 extern "C" void
 _PG_init(void)
@@ -548,10 +744,29 @@ _PG_init(void)
     prev_joinrel_size_estimates_hook = set_joinrel_size_estimates_hook;
     set_joinrel_size_estimates_hook = hint_aware_joinrel_size_estimates;
 
+    prev_cost_seqscan_hook = cost_seqscan_hook;
+    cost_seqscan_hook = hint_aware_cost_seqscan;
+
+    prev_cost_index_hook = cost_index_hook;
+    cost_index_hook = hint_aware_cost_idxscan;
+
+    prev_cost_bitmap_heap_scan_hook = cost_bitmap_heap_scan_hook;
+    cost_bitmap_heap_scan_hook = hint_aware_cost_bitmapscan;
+
     prev_initial_cost_nestloop_hook = initial_cost_nestloop_hook;
     initial_cost_nestloop_hook = hint_aware_initial_cost_nestloop;
     prev_final_cost_nestloop_hook = final_cost_nestloop_hook;
     final_cost_nestloop_hook = hint_aware_final_cost_nestloop;
+
+    prev_initial_cost_hashjoin_hook = initial_cost_hashjoin_hook;
+    initial_cost_hashjoin_hook = hint_aware_initial_cost_hashjoin;
+    prev_final_cost_hashjoin_hook = final_cost_hashjoin_hook;
+    final_cost_hashjoin_hook = hint_aware_final_cost_hashjoin;
+
+    prev_initial_cost_mergejoin_hook = initial_cost_mergejoin_hook;
+    initial_cost_mergejoin_hook = hint_aware_intial_cost_mergejoin;
+    prev_final_cost_mergejoin_hook = final_cost_mergejoin_hook;
+    final_cost_mergejoin_hook = hint_aware_final_cost_mergejoin;
 }
 
 extern "C" void

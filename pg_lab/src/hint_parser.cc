@@ -41,9 +41,13 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
                 relations = bms_add_member(relations, rt_index);
             }
 
+            if (ctx->cost_hint()) {
+                ExtractJoinCost(ctx, relations);
+                return;
+            }
+
             OperatorHashEntry *operator_hint = (OperatorHashEntry*) hash_search(hints_->operator_hints,
                                                                                 &relations, HASH_ENTER, NULL);
-
             if (ctx->NESTLOOP()) {
                 operator_hint->op = NESTLOOP;
             } else if (ctx->HASHJOIN()) {
@@ -52,12 +56,6 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
                 operator_hint->op = MERGEJOIN;
             } else {
                 /* XXX: appropriate error handling */
-            }
-
-            if (ctx->cost_hint()) {
-                ExtractOperatorCost(operator_hint, ctx->cost_hint());
-            } else {
-                operator_hint->hint_type = FORCED_OP;
             }
         }
 
@@ -68,18 +66,17 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
             OperatorHashEntry* operator_hint = (OperatorHashEntry*) hash_search(hints_->operator_hints,
                                                                                 &operator_key, HASH_ENTER, NULL);
 
+            if (ctx->cost_hint()) {
+                ExtractScanCost(ctx, operator_key);
+                return;
+            }
+
             if (ctx->SEQSCAN()) {
                 operator_hint->op = SEQSCAN;
             } else if (ctx->IDXSCAN()) {
                 operator_hint->op = IDXSCAN;
             } else {
                 /* XXX: appropriate error handling */
-            }
-
-            if (ctx->cost_hint()) {
-                ExtractOperatorCost(operator_hint, ctx->cost_hint());
-            } else {
-                operator_hint->hint_type = FORCED_OP;
             }
         }
 
@@ -100,13 +97,49 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
         PlannerInfo *root_;
         PlannerHints *hints_;
 
-        void ExtractOperatorCost(OperatorHashEntry *operator_hint, pg_lab::HintBlockParser::Cost_hintContext *ctx) {
-            auto startup_cost = std::atof(ctx->FLOAT().at(0)->getText().c_str());
-            auto total_cost = std::atof(ctx->FLOAT().at(1)->getText().c_str());
+        void ExtractJoinCost(pg_lab::HintBlockParser::Join_op_hintContext *ctx, Relids relations) {
+            CostHashEntry *cost_hint = (CostHashEntry*) hash_search(hints_->cost_hints,
+                                                                    &relations, HASH_ENTER, NULL);
+            cost_hint->node_type = JOIN_REL;
+            auto join_costs = &cost_hint->costs.join_cost;
+            auto cost_ctx = ctx->cost_hint();
+            auto startup_cost = std::atof(cost_ctx->FLOAT().at(0)->getText().c_str());
+            auto total_cost = std::atof(cost_ctx->FLOAT().at(1)->getText().c_str());
+            if (ctx->NESTLOOP()) {
+                join_costs->nestloop_startup = startup_cost;
+                join_costs->nestloop_total = total_cost;
+            } else if (ctx->HASHJOIN()) {
+                join_costs->hash_startup = startup_cost;
+                join_costs->hash_total = total_cost;
+            } else if (ctx->MERGEJOIN()) {
+                join_costs->merge_startup = startup_cost;
+                join_costs->merge_total = total_cost;
+            } else {
+                /* XXX: appropriate error handling */
+            }
+        }
 
-            operator_hint->hint_type = COST_OP;
-            operator_hint->startup_cost = startup_cost;
-            operator_hint->total_cost = total_cost;
+        void ExtractScanCost(pg_lab::HintBlockParser::Scan_op_hintContext *ctx, Relids relation) {
+            CostHashEntry *cost_hint = (CostHashEntry*) hash_search(hints_->cost_hints,
+                                                                    &relation, HASH_ENTER, NULL);
+            cost_hint->node_type = BASE_REL;
+            auto scan_costs = &cost_hint->costs.scan_cost;
+            auto cost_ctx = ctx->cost_hint();
+            auto startup_cost = std::atof(cost_ctx->FLOAT().at(0)->getText().c_str());
+            auto total_cost = std::atof(cost_ctx->FLOAT().at(1)->getText().c_str());
+            if (ctx->SEQSCAN()) {
+                scan_costs->seqscan_startup = startup_cost;
+                scan_costs->seqscan_total = total_cost;
+            } else if (ctx->IDXSCAN()) {
+                scan_costs->idxscan_startup = startup_cost;
+                scan_costs->idxscan_total = total_cost;
+            } else if (ctx->BITMAPSCAN()) {
+                scan_costs->bitmap_startup = startup_cost;
+                scan_costs->bitmap_total = total_cost;
+
+            } else {
+                /* XXX: appropriate error handling */
+            }
         }
 
         JoinOrder *ParseJoinOrder(pg_lab::HintBlockParser::Join_order_entryContext *ctx) {
@@ -225,6 +258,17 @@ void init_hints(PlannerInfo *root, PlannerHints *hints) {
                                            &card_hints_hctl,
                                            HASH_ELEM | HASH_CONTEXT | HASH_FUNCTION | HASH_COMPARE);
 
+    HASHCTL cost_hints_hctl;
+    cost_hints_hctl.keysize = sizeof(Relids);
+    cost_hints_hctl.entrysize = sizeof(CostHashEntry);
+    cost_hints_hctl.hcxt = CurrentMemoryContext;
+    cost_hints_hctl.hash = bitmap_hash;
+    cost_hints_hctl.match = bitmap_match;
+    hints->cost_hints = hash_create("CostHintHashes",
+                                    32L,
+                                    &cost_hints_hctl,
+                                    HASH_ELEM | HASH_CONTEXT | HASH_FUNCTION | HASH_COMPARE);
+
     /*
      * C++ extensions for Postgres should only put POD-objects onto the stack. This enables correct unrolling in case of
      * errors, thereby keeping the current connection alive. Therefore, we need to allocate all non-POD objects on the heap.
@@ -274,4 +318,7 @@ void free_hints(PlannerHints *hints) {
 
     if (hints->cardinality_hints)
         hash_destroy(hints->cardinality_hints);
+
+    if (hints->cost_hints)
+        hash_destroy(hints->cost_hints);
 }

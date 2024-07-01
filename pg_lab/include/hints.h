@@ -17,11 +17,11 @@ extern "C" {
 
 extern char *current_query_string;
 
-typedef enum JoinNodeTag
+typedef enum HintTag
 {
     BASE_REL,
     JOIN_REL
-} JoinNodeTag;
+} HintTag;
 
 
 typedef enum PhysicalOperator
@@ -35,7 +35,7 @@ typedef enum PhysicalOperator
 
 typedef struct JoinOrder
 {
-    JoinNodeTag node_type;
+    HintTag node_type;
     Relids relids;  /* The rangetable indexes of the relations combined by this node */
 
     /* Only set for base rels */
@@ -68,16 +68,9 @@ extern void init_join_order_iterator(JoinOrderIterator *iterator, JoinOrder *joi
 extern void join_order_iterator_next(JoinOrderIterator *iterator);
 extern void free_join_order_iterator(JoinOrderIterator *iterator);
 
-typedef enum OperatorHintType
-{
-    FORCED_OP,
-    COST_OP
-} OperatorHintType;
-
 typedef struct OperatorHashEntry
 {
     Relids relids;
-    OperatorHintType hint_type;
     PhysicalOperator op;
     Cost startup_cost;
     Cost total_cost;
@@ -89,6 +82,37 @@ typedef struct CardinalityHashEntry
     Cardinality card;
 } CardinalityHashEntry;
 
+typedef struct ScanCost
+{
+    Cost seqscan_startup;
+    Cost seqscan_total;
+    Cost idxscan_startup;
+    Cost idxscan_total;
+    Cost bitmap_startup;
+    Cost bitmap_total;
+} ScanCost;
+
+typedef struct JoinCost
+{
+    Cost nestloop_startup;
+    Cost nestloop_total;
+    Cost hash_startup;
+    Cost hash_total;
+    Cost merge_startup;
+    Cost merge_total;
+} JoinCost;
+
+typedef struct CostHashEntry
+{
+    Relids relids;
+    HintTag node_type;
+
+    union
+    {
+        ScanCost scan_cost;
+        JoinCost join_cost;
+    } costs;
+} CostHashEntry;
 
 typedef struct PlannerHints {
 
@@ -115,6 +139,8 @@ typedef struct PlannerHints {
     HTAB *operator_hints;
 
     HTAB *cardinality_hints;
+
+    HTAB *cost_hints;
 
 } PlannerHints;
 

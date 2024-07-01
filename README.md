@@ -55,8 +55,53 @@ also work for other Linux distributions.
 
 ## Usage
 
-TODO
+Since pg_lab is both a fork of Postgres, as well as an extension, it can be used for two different use-cases:
 
+1. enforcing optimizer decisions through an external component by means of hints embedded into the SQL query
+2. modifying the optimizer behavior through a Postgres extension
+
+### Hint syntax
+
+All hints must be embedded in a comment that is submitted to the Postgres server as part of the SQL query. The comment _must_
+have the following syntax in order to be recognized:
+
+```
+/*=pg_lab=
+ <hint list>
+*/
+```
+The usage of newlines is optional. Notice that the hint block detection is currently rather primitive: the extension only
+performs a (context-free) substring search. Therefore, certain queries might trigger the extension unintentionally.
+
+Within the hint block, three types of hints are supported:
+
+- `JoinOrder(<tables>)` enforces the specified join order. Use parantheses to denote subtrees and always wrap the entire join
+  order into another set of parantheses. E.g. `JoinOrder(((A B) C))` enforces the join A ⋈ B to be executed first and the
+  resulting intermediate to be joined to C. Notice that this join is different from `JoinOrder((C (A B)))`: in the first join
+  order, C acted as the inner relation, whereas C is the outer relation in the second example.
+- `Card(<tables> #<rows>)` overwrites the cardinality estimate of the (intermediate) table(s) and sets it to the given number
+  of rows. The rows must be an integer. E.g. `Card(A #42)` sets the estimate for scanning A (including all filters) to 42,
+  whereas `Card(A B C #42)` does the same for the intermediate consisting of the join between A, B and C.
+- `<operator>(<tables>)` forces the (intermediate) result consisting of the specified table(s) to be computed using the given
+  operator. Notice that this does not force the computation of the intermediate. The optimizer is free to use a different join
+  order instead - unless the `JoinOrder` hint is used as well.
+
+  Supported operators are `SeqScan` and `IdxScan` for base relations, e.g. `SeqScan(A)` or `IdxScan(B)`, and `NestLoop`,
+  `MergeJoin` or `HashJoin` for joins, e.g. `MergeJoin(A B)` or `NestLoop(A B C)`.
+
+  You can also add an optional `(FORCED)` clause after the tables to contrast this hint from a cost hint (see next bullet
+  point): `HashJoin(A B C (FORCED))`.
+- `<operator>(<tables> (COST start=<float> total=<float>))` overwrites the native cost estimate for the given operator. The
+  same operator and tables syntax as for the operator-forcing hint is used. Additionally, `BitmapScan` can be used to cost
+  bitmap scans, in which case the cost corresponds to the actual heap operator. Both startup and total cost _must_ be floating
+  point numbers, i.e. trailing zeros have to be used if necessary (`1.0` instead of `1`).
+  For example, `NestLoop(A B (COST start=4.2 total=42.0))`.
+
+Tables can be referred to using either their full names, or aliases.
+
+### Custom Postgres optimizer extensions
+
+TODO
 
 ## Supported Postgres versions
 

@@ -33,7 +33,7 @@ join_op_hint
     : ( NESTLOOP | HASHJOIN | MERGEJOIN ) LPAREN binary_rel_id relation_id* (forced_hint? | cost_hint) RPAREN
     ;
 scan_op_hint
-    : (SEQSCAN | IDXSCAN) LPAREN relation_id (forced_hint? | cost_hint) RPAREN
+    : (SEQSCAN | IDXSCAN | BITMAPSCAN) LPAREN relation_id (forced_hint? | cost_hint) RPAREN
     ;
 
 cardinality_hint
@@ -71,6 +71,7 @@ MERGEJOIN   : 'MergeJoin'   ;
 HASHJOIN    : 'HashJoin'    ;
 SEQSCAN     : 'SeqScan'     ;
 IDXSCAN     : 'IdxScan'     ;
+BITMAPSCAN  : 'BitmapScan'  ;
 CARD        : 'Card'        ;
 COST        : 'Cost'        ;
 STARTUP     : 'Start'       ;
