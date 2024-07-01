@@ -86,7 +86,7 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
                 Index rt_index = resolve_rt_index(root_, relname->getText().c_str());
                 relations = bms_add_member(relations, rt_index);
             }
-            auto cardinality = std::atoi(ctx->INT()->getText().c_str());
+            Cardinality cardinality = std::atof(ctx->INT()->getText().c_str());
 
             CardinalityHashEntry *cardinality_hint = (CardinalityHashEntry*) hash_search(hints_->cardinality_hints,
                                                                                          &relations, HASH_ENTER, NULL);

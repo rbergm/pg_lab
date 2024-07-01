@@ -497,7 +497,6 @@ hint_aware_cost_seqscan(Path *path, PlannerInfo *root, RelOptInfo *baserel, Para
 
     path->startup_cost = hint_entry->costs.scan_cost.seqscan_startup;
     path->total_cost = hint_entry->costs.scan_cost.seqscan_total;
-
 }
 
 extern "C" void
