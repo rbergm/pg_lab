@@ -1,3 +1,5 @@
+<meta name="robots" content="noindex">
+
 # pg_lab
 
 <img src="assets/pg_lab_logo.png" width="256" alt="The Logo of pg_lab: a blue elephant wearing a chemist's coat is surrounded by various reagents." />
