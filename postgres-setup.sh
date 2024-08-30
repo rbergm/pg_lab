@@ -85,13 +85,19 @@ done
 PG_BUILD_DIR=$PG_TARGET_DIR/dist
 export PGDATA=$PG_BUILD_DIR/data
 
-echo ".. Cloning Postgres $PG_VER_PRETTY"
-git clone --depth 1 --branch $PG_VERSION https://github.com/postgres/postgres.git $PG_TARGET_DIR
+
+if [ -d $PG_TARGET_DIR ] ; then
+    echo ".. Directory $PG_TARGET_DIR already exists, assuming this is a (patched) Postgres installation and re-using"
+else
+    echo ".. Cloning Postgres $PG_VER_PRETTY"
+    git clone --depth 1 --branch $PG_VERSION https://github.com/postgres/postgres.git $PG_TARGET_DIR
+
+    cd $PG_TARGET_DIR
+    echo ".. Applying pg_lab patches for Postgres $PG_VER_PRETTY"
+    git apply $PG_PATCH
+fi
+
 cd $PG_TARGET_DIR
-
-echo ".. Applying pg_lab patches for Postgres $PG_VER_PRETTY"
-git apply $PG_PATCH
-
 echo ".. Building Postgres $PG_VER_PRETTY"
 ./configure --prefix=$PG_TARGET_DIR/dist $PG_BUILDOPTS
 make clean && make -j $MAKE_CORES && make install
