@@ -2,8 +2,14 @@
 
 WD=$PWD
 NCORES=$(($(nproc --all) / 2))
+PG_PATH="../postgres-server"
 
-cd ../postgres-server
+if [ ! -z "$1" ]; then
+    PG_PATH=$1
+fi
+
+
+cd $PG_PATH
 make -j $NCORES && make install
 if [ $? -ne 0 ]; then
     echo "Could not build patch - changes contain compile errors"
