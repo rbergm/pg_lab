@@ -108,7 +108,7 @@ TODO
 
 ## Supported Postgres versions
 
-Currently, pg_lab only supports Postgres v16.
+Currently, pg_lab only supports Postgres v16 and v17.
 
 
 ## Modifications

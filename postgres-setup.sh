@@ -4,9 +4,9 @@ set -e  # exit on error
 
 WD=$(pwd)
 USER=$(whoami)
-PG_VER_PRETTY=16
-PG_VERSION=REL_16_STABLE
-PG_PATCH=$WD/pg-patches/pg_lab-pg16.patch
+PG_VER_PRETTY=17
+PG_VERSION=REL_17_STABLE
+PG_PATCH=$WD/pg-patches/pg_lab-pg17.patch
 PG_PATCH_DIR=$WD/pg-patches
 PG_TARGET_DIR="$WD/postgres-server"
 PG_DEFAULT_PORT=5432
@@ -18,17 +18,18 @@ STOP_AFTER="false"
 PG_BUILDOPTS=""
 
 show_help() {
+    RET=$1
     NEWLINE="\n\t\t\t\t"
     echo -e "Usage: $0 <options>"
     echo -e "Setup a local Postgres server with the given options. The default user is the current UNIX username.\n"
     echo -e "Allowed options:"
-    echo -e "--pg-ver <version>\t\tSetup Postgres with the given version.${NEWLINE}Currently allowed values: 16 (default))"
+    echo -e "--pg-ver <version>\t\tSetup Postgres with the given version.${NEWLINE}Currently allowed values: 16, 17 (default))"
     echo -e "-d | --dir <directory>\t\tInstall Postgres server to the designated directory (postgres-server by default)."
     echo -e "-p | --port <port number>\tConfigure the Postgres server to listen on the given port (5432 by default)."
     echo -e "--remote-password <password>\tEnable remote access for the current user, based on the given password.${NEWLINE}Remote access is disabled if no password is provided."
     echo -e "--debug\t\t\t\tProduce a debug build of the Postgres server"
     echo -e "--stop\t\t\t\tStop the Postgres server process after installation and setup finished"
-    exit 1
+    exit $RET
 }
 
 while [ $# -gt 0 ] ; do
@@ -39,6 +40,11 @@ while [ $# -gt 0 ] ; do
                     PG_VER_PRETTY="16"
                     PG_VERSION=REL_16_STABLE
                     PG_PATCH=$PG_PATCH_DIR/pg_lab-pg16.patch
+                    ;;
+                17)
+                    PG_VER_PRETTY="17"
+                    PG_VERSION=REL_17_STABLE
+                    PG_PATCH=$PG_PATCH_DIR/pg_lab-pg17.patch
                     ;;
                 *)
                     show_help
@@ -76,8 +82,11 @@ while [ $# -gt 0 ] ; do
             STOP_AFTER="true"
             shift
             ;;
+        --help)
+            show_help 0
+            ;;
         *)
-            show_help
+            show_help 1
             ;;
     esac
 done
