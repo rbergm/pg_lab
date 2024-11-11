@@ -17,6 +17,13 @@ extern "C" {
 
 extern char *current_query_string;
 
+typedef enum HintMode
+{
+    FULL,
+    ANCHORED
+} HintMode;
+
+
 typedef enum HintTag
 {
     BASE_REL,
@@ -26,11 +33,14 @@ typedef enum HintTag
 
 typedef enum PhysicalOperator
 {
+    NOT_SPECIFIED,
     SEQSCAN,
     IDXSCAN,
     NESTLOOP,
     HASHJOIN,
-    MERGEJOIN
+    MERGEJOIN,
+    MEMOIZE,
+    MATERIALIZE
 } PhysicalOperator;
 
 typedef struct JoinOrder
@@ -72,8 +82,9 @@ typedef struct OperatorHashEntry
 {
     Relids relids;
     PhysicalOperator op;
-    Cost startup_cost;
-    Cost total_cost;
+
+    bool materialize_output;
+    bool memoize_output;
 } OperatorHashEntry;
 
 typedef struct CardinalityHashEntry
@@ -116,23 +127,13 @@ typedef struct CostHashEntry
 
 typedef struct PlannerHints {
 
-    /* FIXME: the current BMS-based hash tables do not work for queries with multiple references to the same physical relation */
-
-    /*
-     * We need to include the GeQO data as the first field here b/c there is no guarantee
-     * we force the join order via a hint.
-     * In this case, Postgres' default policies will be used. Specifically, GeQO might still be
-     * invoked. If we store our planner info in the join search private data, this field would no
-     * longer be usable by GeQO. Therefore, we store the GeQO data here. All casts from within the
-     * GeQO code will still work.
-     */
-    GeqoPrivateData geqo_private;
-
     char *raw_query;
 
     bool contains_hint;
 
     char *raw_hint;
+
+    HintMode mode;
 
     JoinOrder *join_order_hint;
 

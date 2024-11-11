@@ -4,10 +4,28 @@ options { caseInsensitive = true; }
 hint_block : HBLOCK_START hints* HBLOCK_END ;
 
 hints
-    : join_order_hint
+    : setting_hint
+    | join_order_hint
     | operator_hint
     | cardinality_hint
     | cost_hint
+    ;
+
+setting_hint
+    : CONFIG LPAREN setting_list RPAREN
+    ;
+
+setting_list
+    : setting_list SEM setting
+    | setting
+    ;
+
+setting
+    : plan_mode_setting
+    ;
+
+plan_mode_setting
+    : PLANMODE EQ (FULL | ANCHORED)
     ;
 
 join_order_hint
@@ -30,10 +48,11 @@ operator_hint
     ;
 
 join_op_hint
-    : ( NESTLOOP | HASHJOIN | MERGEJOIN ) LPAREN binary_rel_id relation_id* (forced_hint? | cost_hint) RPAREN
+    : (NESTLOOP | HASHJOIN | MERGEJOIN | MEMOIZE | MATERIALIZE) LPAREN binary_rel_id relation_id* (forced_hint? | cost_hint) RPAREN
     ;
+
 scan_op_hint
-    : (SEQSCAN | IDXSCAN | BITMAPSCAN) LPAREN relation_id (forced_hint? | cost_hint) RPAREN
+    : (SEQSCAN | IDXSCAN | BITMAPSCAN | MEMOIZE | MATERIALIZE) LPAREN relation_id (forced_hint? | cost_hint) RPAREN
     ;
 
 cardinality_hint
@@ -51,6 +70,7 @@ forced_hint
 binary_rel_id
     : relation_id relation_id
     ;
+
 relation_id
     : REL_ID
     ;
@@ -69,7 +89,10 @@ RPAREN       : ')'   ;
 HASH         : '#'   ;
 EQ           : '='   ;
 DOT          : '.'   ;
+SEM          : ';'   ;
 
+CONFIG      : 'Config'      ;
+PLANMODE    : 'plan_mode'   ;
 JOINORDER   : 'JoinOrder'   ;
 NESTLOOP    : 'NestLoop'    ;
 MERGEJOIN   : 'MergeJoin'   ;
@@ -77,11 +100,15 @@ HASHJOIN    : 'HashJoin'    ;
 SEQSCAN     : 'SeqScan'     ;
 IDXSCAN     : 'IdxScan'     ;
 BITMAPSCAN  : 'BitmapScan'  ;
+MEMOIZE     : 'Memo'        ;
+MATERIALIZE : 'Material'    ;
 CARD        : 'Card'        ;
 COST        : 'Cost'        ;
 STARTUP     : 'Start'       ;
 TOTAL       : 'Total'       ;
 FORCED      : 'Forced'      ;
+FULL        : 'full'        ;
+ANCHORED    : 'anchored'    ;
 
 REL_ID      : [a-z_][a-z_0-9]*  ;
 FLOAT       : [0-9]+ DOT [0-9]+ ;

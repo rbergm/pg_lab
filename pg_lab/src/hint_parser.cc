@@ -1,4 +1,6 @@
 
+#include <math.h>
+
 #include "antlr4-runtime.h"
 #include "HintBlockLexer.h"
 #include "HintBlockParser.h"
@@ -24,6 +26,16 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
     public:
         explicit HintBlockListener(PlannerInfo *root, PlannerHints *hints) : root_(root), hints_(hints) {}
 
+        void enterPlan_mode_setting(pg_lab::HintBlockParser::Plan_mode_settingContext *ctx) override {
+            if (ctx->FULL()) {
+                hints_->mode = FULL;
+            } else if (ctx->ANCHORED()) {
+                hints_->mode = ANCHORED;
+            } else {
+                /* XXX: appropriate error handling */
+            }
+        }
+
         void enterJoin_order_hint(pg_lab::HintBlockParser::Join_order_hintContext *ctx) override {
             auto join_order = this->ParseJoinOrderIntermediate(ctx->intermediate_join_order());
             hints_->join_order_hint = join_order;
@@ -46,8 +58,24 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
                 return;
             }
 
+            bool hint_found = false;
             OperatorHashEntry *operator_hint = (OperatorHashEntry*) hash_search(hints_->operator_hints,
-                                                                                &relations, HASH_ENTER, NULL);
+                                                                                &relations, HASH_ENTER, &hint_found);
+
+            if (!hint_found) {
+                operator_hint->op = NOT_SPECIFIED;
+                operator_hint->materialize_output = false;
+                operator_hint->memoize_output = false;
+            }
+
+            if (ctx->MATERIALIZE()) {
+                operator_hint->materialize_output = true;
+                return;
+            } else if (ctx->MEMOIZE()) {
+                operator_hint->memoize_output = true;
+                return;
+            }
+
             if (ctx->NESTLOOP()) {
                 operator_hint->op = NESTLOOP;
             } else if (ctx->HASHJOIN()) {
@@ -63,13 +91,30 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
             auto relname = ctx->relation_id()->getText().c_str();
             Index rt_index = resolve_rt_index(root_, relname);
             Bitmapset *operator_key = bms_make_singleton(rt_index);
-            OperatorHashEntry* operator_hint = (OperatorHashEntry*) hash_search(hints_->operator_hints,
-                                                                                &operator_key, HASH_ENTER, NULL);
 
             if (ctx->cost_hint()) {
                 ExtractScanCost(ctx, operator_key);
                 return;
             }
+
+            bool hint_found = false;
+            OperatorHashEntry* operator_hint = (OperatorHashEntry*) hash_search(hints_->operator_hints,
+                                                                                &operator_key, HASH_ENTER, &hint_found);
+
+            if (!hint_found) {
+                operator_hint->op = NOT_SPECIFIED;
+                operator_hint->materialize_output = false;
+                operator_hint->memoize_output = false;
+            }
+
+            if (ctx->MATERIALIZE()) {
+                operator_hint->materialize_output = true;
+                return;
+            } else if (ctx->MEMOIZE()) {
+                operator_hint->memoize_output = true;
+                return;
+            }
+
 
             if (ctx->SEQSCAN()) {
                 operator_hint->op = SEQSCAN;
@@ -98,10 +143,22 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
         PlannerHints *hints_;
 
         void ExtractJoinCost(pg_lab::HintBlockParser::Join_op_hintContext *ctx, Relids relations) {
+            JoinCost *join_costs;
+            bool hint_found = false;
             CostHashEntry *cost_hint = (CostHashEntry*) hash_search(hints_->cost_hints,
-                                                                    &relations, HASH_ENTER, NULL);
-            cost_hint->node_type = JOIN_REL;
-            auto join_costs = &cost_hint->costs.join_cost;
+                                                                    &relations, HASH_ENTER, &hint_found);
+            join_costs = &cost_hint->costs.join_cost;
+
+            if (!hint_found) {
+                cost_hint->node_type = JOIN_REL;
+                join_costs->hash_startup = NAN;
+                join_costs->hash_total = NAN;
+                join_costs->merge_startup = NAN;
+                join_costs->merge_total = NAN;
+                join_costs->nestloop_startup = NAN;
+                join_costs->nestloop_total = NAN;
+            }
+
             auto cost_ctx = ctx->cost_hint();
             auto startup_cost = ParseCost(cost_ctx->cost().at(0));
             auto total_cost = ParseCost(cost_ctx->cost().at(1));
@@ -121,10 +178,23 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
         }
 
         void ExtractScanCost(pg_lab::HintBlockParser::Scan_op_hintContext *ctx, Relids relation) {
+            ScanCost *scan_costs;
+            bool hint_found = false;
             CostHashEntry *cost_hint = (CostHashEntry*) hash_search(hints_->cost_hints,
-                                                                    &relation, HASH_ENTER, NULL);
-            cost_hint->node_type = BASE_REL;
-            auto scan_costs = &cost_hint->costs.scan_cost;
+                                                                    &relation, HASH_ENTER, &hint_found);
+
+            scan_costs = &cost_hint->costs.scan_cost;
+
+            if (!hint_found) {
+                cost_hint->node_type = BASE_REL;
+                scan_costs->seqscan_startup = NAN;
+                scan_costs->seqscan_total = NAN;
+                scan_costs->idxscan_startup = NAN;
+                scan_costs->idxscan_total = NAN;
+                scan_costs->bitmap_startup = NAN;
+                scan_costs->bitmap_total = NAN;
+            }
+
             auto cost_ctx = ctx->cost_hint();
             auto total_cost_hint = cost_ctx->cost().at(1);
             auto startup_cost = ParseCost(cost_ctx->cost().at(0));
@@ -229,6 +299,8 @@ static Index resolve_rt_index(PlannerInfo *root, const char *relname_or_alias)
 
 void init_hints(PlannerInfo *root, PlannerHints *hints) {
     hints->raw_query = current_query_string;
+    hints->mode = ANCHORED;
+
     std::string *query_buffer = new std::string(hints->raw_query);
 
     /* TODO: invoke hint parser, extract and resolve aliases to OIDs */
@@ -327,12 +399,7 @@ void free_hints(PlannerHints *hints) {
     if (hints->join_order_hint)
         free_join_order(hints->join_order_hint);
 
-    if (hints->operator_hints)
-        hash_destroy(hints->operator_hints);
-
-    if (hints->cardinality_hints)
-        hash_destroy(hints->cardinality_hints);
-
-    if (hints->cost_hints)
-        hash_destroy(hints->cost_hints);
+    hash_destroy(hints->operator_hints);
+    hash_destroy(hints->cardinality_hints);
+    hash_destroy(hints->cost_hints);
 }

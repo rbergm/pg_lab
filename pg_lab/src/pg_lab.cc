@@ -1,6 +1,7 @@
 
 extern "C" {
 #include <limits.h>
+#include <math.h>
 
 #include "postgres.h"
 
@@ -56,6 +57,12 @@ extern "C" {
 
     extern add_partial_path_hook_type add_partial_path_hook;
     static add_partial_path_hook_type prev_add_partial_path_hook = NULL;
+
+    extern add_path_precheck_hook_type add_path_precheck_hook;
+    static add_path_precheck_hook_type prev_add_path_precheck_hook = NULL;
+
+    extern add_partial_path_precheck_hook_type add_partial_path_precheck_hook;
+    static add_partial_path_precheck_hook_type prev_add_partial_path_precheck_hook = NULL;
 
     extern set_rel_pathlist_hook_type set_rel_pathlist_hook;
     static set_rel_pathlist_hook_type prev_rel_pathlist_hook = NULL;
@@ -229,6 +236,34 @@ hint_aware_planner(Query* parse, const char* query_string, int cursorOptions, Pa
     return result;
 }
 
+extern "C" bool
+hint_aware_add_path_precheck(RelOptInfo *parent_rel, Cost startup_cost, Cost total_cost,
+                             List *pathkeys, Relids required_outer)
+{
+    if (current_hints)
+        /* XXX: we could be smarter and try to check, whether there actually is a hint concerning the current path */
+        return true;
+
+    if (prev_add_path_precheck_hook)
+        return (*prev_add_path_precheck_hook)(parent_rel, startup_cost, total_cost, pathkeys, required_outer);
+    else
+        return standard_add_path_precheck(parent_rel, startup_cost, total_cost, pathkeys, required_outer);
+}
+
+extern "C" bool
+hint_aware_add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost, List *pathkeys)
+{
+    if (current_hints)
+        /* XXX: we could be smarter and try to check, whether there actually is a hint concerning the current path */
+        return true;
+
+    if (prev_add_partial_path_precheck_hook)
+        return (*prev_add_partial_path_precheck_hook)(parent_rel, total_cost, pathkeys);
+    else
+        return standard_add_partial_path_precheck(parent_rel, total_cost, pathkeys);
+}
+
+
 typedef void (*add_path_handler_type) (RelOptInfo *parent_rel, Path *new_path);
 
 /* utility macros inspired by nodeTag and IsA from nodes.h */
@@ -236,6 +271,37 @@ typedef void (*add_path_handler_type) (RelOptInfo *parent_rel, Path *new_path);
 #define PathIsA(nodeptr,_type_) (pathTag(nodeptr) == T_ ## _type_)
 #define IsAScanPath(pathptr) (PathIsA(pathptr, SeqScan) || PathIsA(pathptr, IndexScan) || PathIsA(pathptr, BitmapHeapScan))
 #define IsAJoinPath(pathptr) (PathIsA(pathptr, NestLoop) || PathIsA(pathptr, MergeJoin) || PathIsA(pathptr, HashJoin))
+
+
+static bool
+correct_memoize_materialize_usage(JoinPath *join_path, Path *inner_path)
+{
+    bool hint_found = false;
+    OperatorHashEntry *inner_hint = (OperatorHashEntry*) hash_search(current_hints->operator_hints,
+                                                                        &(inner_path->parent->relids),
+                                                                        HASH_FIND, &hint_found);
+
+    if (!hint_found)
+    {
+        if (current_hints->mode != FULL)
+            return true;
+
+        /* in FULL plan mode, the inner path might neither be Memoize nor Materialize if it is not hinted to be */
+        return !(PathIsA(inner_path, Memoize) || PathIsA(inner_path, Material));
+    }
+
+    if (inner_hint->materialize_output)
+        return PathIsA(inner_path, Material);
+    else if (current_hints->mode == FULL)
+        return !PathIsA(inner_path, Material);
+
+    if (inner_hint->memoize_output)
+        return PathIsA(inner_path, Memoize);
+    else if (current_hints->mode == FULL)
+        return !PathIsA(inner_path, Memoize);
+
+    return true;
+}
 
 void add_path_handler(add_path_handler_type handler, RelOptInfo *parent_rel, Path *new_path)
 {
@@ -274,6 +340,13 @@ void add_path_handler(add_path_handler_type handler, RelOptInfo *parent_rel, Pat
     {
         (*handler)(parent_rel, new_path);
         return;
+    }
+
+    if (IsAJoinPath(new_path))
+    {
+        JoinPath *jpath = (JoinPath*) new_path;
+        if (!correct_memoize_materialize_usage(jpath, jpath->innerjoinpath))
+            return;
     }
 
     hint_entry = (OperatorHashEntry*) hash_search(current_hints->operator_hints, &(parent_rel->relids), HASH_FIND, &hint_found);
@@ -737,6 +810,12 @@ _PG_init(void)
     prev_add_partial_path_hook = add_partial_path_hook;
     add_partial_path_hook = hint_aware_add_partial_path;
 
+    prev_add_path_precheck_hook = add_path_precheck_hook;
+    add_path_precheck_hook = hint_aware_add_path_precheck;
+
+    prev_add_partial_path_precheck_hook = add_partial_path_precheck_hook;
+    add_partial_path_precheck_hook = hint_aware_add_partial_path_precheck;
+
     prev_baserel_size_estimates_hook = set_baserel_size_estimates_hook;
     set_baserel_size_estimates_hook = hint_aware_baserel_size_estimates;
 
@@ -771,6 +850,7 @@ _PG_init(void)
 extern "C" void
 _PG_fini(void)
 {
+    /* XXX */
     planner_hook = prev_planner_hook;
     prepare_make_one_rel_hook = prev_prepare_make_one_rel_hook;
     join_search_hook = prev_join_search_hook;

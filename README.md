@@ -41,6 +41,8 @@ extension points to implement its custom behavior. The fundamental control-flow 
 |---------|--------------|--------|
 | Forcing the join order | ✅ `Leading` hint | ✅ `JoinOrder` hint |
 | Forcing physical operators | ✅ Specific hints, e.g. `NestLoop(a b)` | ✅ Specific hints, e.g. `NestLoop(a b (FORCED))` |
+| Hints for Materialize and Memoize operators | ✅ Memoize, ❌ Materialize | ✅ `Memo` and `Material` hints |
+| Disabling specific operators | ✅ `NoNestLoop`, etc. hints | ❌ Not supported but planned |
 | Custom cardinality estimates for joins | ✅ `Rows` hint | ✅ `Card` hint |
 | Custom cardinality estimates for base tables | ❌ Not supported | ✅ `Card` hint |
 | Parallel workers for joins | ✅ `Parallel` hint | ❌ Not supported
@@ -91,7 +93,7 @@ Within the hint block, three types of hints are supported:
   order instead - unless the `JoinOrder` hint is used as well.
 
   Supported operators are `SeqScan` and `IdxScan` for base relations, e.g. `SeqScan(A)` or `IdxScan(B)`, and `NestLoop`,
-  `MergeJoin` or `HashJoin` for joins, e.g. `MergeJoin(A B)` or `NestLoop(A B C)`. The cardinality _must_ be an integer.
+  `MergeJoin` or `HashJoin` for joins, e.g. `MergeJoin(A B)` or `NestLoop(A B C)`.
 
   You can also add an optional `(FORCED)` clause after the tables to contrast this hint from a cost hint (see next bullet
   point): `HashJoin(A B C (FORCED))`.
@@ -101,6 +103,27 @@ Within the hint block, three types of hints are supported:
   For example, `NestLoop(A B (COST start=4.2 total=42.0))`.
 
 Tables can be referred to using either their full names, or aliases.
+
+Notice that hints for physical operators are only used, if the corresponding intermediate is actually computed.
+If the optimizer
+decides to go for a different join order, the hint is not used.
+This is especially important for memoize and materialize hints:
+PostgreSQL only uses these operators under very specific circumstances: both are only used as the inner loops of nested-loop
+joins.
+Hence, if the optimizer decides to use the relation as an outer path instead, or if the optimizer prefers a different
+operator or join order, the hint might not be respected.
+Therefore, it is best to also specify the join order if an operator hint must be used.
+
+In addition to plan-related hints, pg_lab also provides a `Config` hint to customize the behavior of the hinting extension
+itself. Currently, the following settings can be supplied:
+
+- `plan_mode = anchored | full`. _Anchored_ plan mode is the default. It means that the hints, e.g. regarding operators, only
+  affect their corresponding intermediates. For all other intermediates the optimizer is free to make its own decisions. For
+  example, this means that the optimizer can insert memoize and materialize nodes as it sees fit. In contrast, the _full_ plan
+  mode only allows such nodes if they are hinted, i.e. memoize and materialize are implicitly disabled whenever no hint exists.
+
+The syntax for `Config` is as follows: `Config(<setting 1>; <setting 2>; ...)`, e.g. `Config(plan_mode = full)`.
+
 
 ### Custom Postgres optimizer extensions
 
