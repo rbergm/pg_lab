@@ -130,35 +130,43 @@ mkdir -p $WD/pg_lab/build
 cd $WD/pg_lab/build
 cmake ..
 make -j $MAKE_CORES
+
+if [ -f $PG_BUILD_DIR/lib/pg_lab.so ] ; then
+    rm $PG_BUILD_DIR/lib/pg_lab.so
+fi
 ln -s $PWD/libpg_lab.so $PG_BUILD_DIR/lib/pg_lab.so
 
 
 echo ".. Initializing Postgres Server environment"
 cd $PG_TARGET_DIR
 
-echo "... Creating cluster"
-initdb -D $PG_BUILD_DIR/data
+if [ -d $PG_BUILD_DIR/data ] ; then
+    echo "... Data directory exists, leaving as-is"
+else
+    echo "... Creating cluster"
+    initdb -D $PG_BUILD_DIR/data
 
-if [ "$PG_PORT" != "$PG_DEFAULT_PORT" ] ; then
-    echo "... Updating Postgres port to $PG_PORT"
-    sed -i "s/#\{0,1\}port = 5432/port = $PG_PORT/" $PGDATA/postgresql.conf
-fi
+    if [ "$PG_PORT" != "$PG_DEFAULT_PORT" ] ; then
+        echo "... Updating Postgres port to $PG_PORT"
+        sed -i "s/#\{0,1\}port = 5432/port = $PG_PORT/" $PGDATA/postgresql.conf
+    fi
 
-echo "... Adding pg_buffercache, pg_hint_plan and pg_prewarm to preload libraries"
-sed -i "s/#\{0,1\}shared_preload_libraries.*/shared_preload_libraries = 'pg_buffercache,pg_lab,pg_prewarm'/" $PGDATA/postgresql.conf
-echo "pg_prewarm.autoprewarm = false" >>  $PGDATA/postgresql.conf
+    echo "... Adding pg_buffercache, pg_hint_plan and pg_prewarm to preload libraries"
+    sed -i "s/#\{0,1\}shared_preload_libraries.*/shared_preload_libraries = 'pg_buffercache,pg_lab,pg_prewarm'/" $PGDATA/postgresql.conf
+    echo "pg_prewarm.autoprewarm = false" >>  $PGDATA/postgresql.conf
 
-echo "... Starting Postgres (log file is pg.log)"
-pg_ctl -D $PGDATA -l pg.log start
+    echo "... Starting Postgres (log file is pg.log)"
+    pg_ctl -D $PGDATA -l pg.log start
 
-echo "... Creating user database for $USER"
-createdb -p $PG_PORT $USER
+    echo "... Creating user database for $USER"
+    createdb -p $PG_PORT $USER
 
-if [ "$ENABLE_REMOTE_ACCESS" == "true" ] ; then
-    echo "... Enabling remote access for $USER"
-    echo -e "#customization\nhost all $USER 0.0.0.0/0 md5" >> $PGDATA/pg_hba.conf
-    sed -i "s/#\{0,1\}listen_addresses = 'localhost'/listen_addresses = '*'/" $PGDATA/postgresql.conf
-    psql -c "ALTER USER $USER WITH PASSWORD '$USER_PASSWORD';"
+    if [ "$ENABLE_REMOTE_ACCESS" == "true" ] ; then
+        echo "... Enabling remote access for $USER"
+        echo -e "#customization\nhost all $USER 0.0.0.0/0 md5" >> $PGDATA/pg_hba.conf
+        sed -i "s/#\{0,1\}listen_addresses = 'localhost'/listen_addresses = '*'/" $PGDATA/postgresql.conf
+        psql -c "ALTER USER $USER WITH PASSWORD '$USER_PASSWORD';"
+    fi
 fi
 
 if [ "$STOP_AFTER" == "true" ] ; then
