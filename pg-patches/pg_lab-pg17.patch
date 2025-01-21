@@ -15,14 +15,14 @@ index 6db03e4..733595c 100755
 --- a/configure
 +++ b/configure
 @@ -19188,7 +19188,7 @@ fi
- 
- 
+
+
  cat >>confdefs.h <<_ACEOF
 -#define PG_VERSION_STR "PostgreSQL $PG_VERSION on $host, compiled by $cc_string, `expr $ac_cv_sizeof_void_p \* 8`-bit"
 +#define PG_VERSION_STR "PostgreSQL $PG_VERSION with pg_lab on $host, compiled by $cc_string, `expr $ac_cv_sizeof_void_p \* 8`-bit"
  _ACEOF
- 
- 
+
+
 diff --git a/src/backend/commands/explain.c b/src/backend/commands/explain.c
 index 8086607..bd1abc8 100644
 --- a/src/backend/commands/explain.c
@@ -40,7 +40,7 @@ index 8086607..bd1abc8 100644
 @@ -69,6 +72,17 @@ typedef struct SerializeMetrics
   */
  #define BYTES_TO_KILOBYTES(b) (((b) + 1023) / 1024)
- 
+
 +char	  **current_planner_type = &PLANNER_TYPE_UNSET;
 +extern PGDLLIMPORT planner_hook_type planner_hook;
 +static planner_hook_type prev_planner_hook;
@@ -57,8 +57,8 @@ index 8086607..bd1abc8 100644
  							const char *queryString, ParamListInfo params,
 @@ -174,6 +188,56 @@ static void escape_yaml(StringInfo buf, const char *str);
  static SerializeMetrics GetSerializationMetrics(DestReceiver *dest);
- 
- 
+
+
 +char	   *PLANNER_TYPE_UNSET = "<unset>";
 +char	   *PLANNER_TYPE_CUSTOM = "Custom Hook";
 +char	   *PLANNER_TYPE_DEFAULT = "Standard";
@@ -109,12 +109,12 @@ index 8086607..bd1abc8 100644
 +
 +	return result;
 +}
- 
+
  /*
   * ExplainQuery -
 @@ -487,7 +551,23 @@ standard_ExplainOneQuery(Query *query, int cursorOptions,
  	INSTR_TIME_SET_CURRENT(planstart);
- 
+
  	/* plan the query */
 -	plan = pg_plan_query(query, queryString, cursorOptions, params);
 +    prev_planner_hook = planner_hook;
@@ -134,7 +134,7 @@ index 8086607..bd1abc8 100644
 +        prev_join_search_hook = NULL;
 +    }
 +    PG_END_TRY();
- 
+
  	INSTR_TIME_SET_CURRENT(planduration);
  	INSTR_TIME_SUBTRACT(planduration, planstart);
 @@ -509,6 +589,24 @@ standard_ExplainOneQuery(Query *query, int cursorOptions,
@@ -160,7 +160,7 @@ index 8086607..bd1abc8 100644
 +        ExplainCloseGroup("OptimizerInfo", NULL, true, es);
 +    }
  }
- 
+
  /*
 diff --git a/src/backend/main/main.c b/src/backend/main/main.c
 index 4672aab..87ae031 100644
@@ -172,9 +172,9 @@ index 4672aab..87ae031 100644
  {
 -	bool		do_check_root = true;
 +	bool		do_check_root = false;
- 
+
  	reached_main = true;
- 
+
 @@ -378,6 +378,8 @@ help(const char *progname)
  static void
  check_root(const char *progname)
@@ -191,7 +191,7 @@ index 52ebdd9..119d18a 100644
 @@ -153,6 +153,38 @@ bool		enable_partition_pruning = true;
  bool		enable_presorted_aggregate = true;
  bool		enable_async_append = true;
- 
+
 +cost_seqscan_hook_type  cost_seqscan_hook = NULL;
 +cost_index_hook_type    cost_index_hook = NULL;
 +
@@ -483,7 +483,7 @@ index 52ebdd9..119d18a 100644
 +						   comparison_cost, sort_mem, limit_tuples);
 +	}
 +}
- 
+
 +/*
 + * standard_cost_sort
 + * 		Default estimation for sort.
@@ -912,7 +912,7 @@ index 52ebdd9..119d18a 100644
 @@ -5243,6 +5789,33 @@ set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel)
  {
  	double		nrows;
- 
+
 +	if (set_baserel_size_estimates_hook)
 +	{
 +		nrows = (*set_baserel_size_estimates_hook) (root, rel);
@@ -942,11 +942,11 @@ index 52ebdd9..119d18a 100644
 +
  	/* Should only be applied to base relations */
  	Assert(rel->relid > 0);
- 
+
 @@ -5253,11 +5826,7 @@ set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel)
  							   JOIN_INNER,
  							   NULL);
- 
+
 -	rel->rows = clamp_row_est(nrows);
 -
 -	cost_qual_eval(&rel->baserestrictcost, rel->baserestrictinfo, root);
@@ -954,7 +954,7 @@ index 52ebdd9..119d18a 100644
 -	set_rel_width(root, rel);
 +	return nrows;
  }
- 
+
  /*
 @@ -5324,14 +5893,41 @@ set_joinrel_size_estimates(PlannerInfo *root, RelOptInfo *rel,
  						   SpecialJoinInfo *sjinfo,
@@ -1004,7 +1004,7 @@ index 52ebdd9..119d18a 100644
 +									   sjinfo, restrictlist);
 +	return nrows;
  }
- 
+
  /*
 diff --git a/src/backend/optimizer/path/joinpath.c b/src/backend/optimizer/path/joinpath.c
 index 5be8da9..ad10b59 100644
@@ -1122,9 +1122,9 @@ index db475e2..786303c 100644
 @@ -22,6 +22,7 @@
  #include "partitioning/partbounds.h"
  #include "utils/memutils.h"
- 
+
 +make_join_rel_hook_type make_join_rel_hook = NULL;
- 
+
  static void make_rels_by_clause_joins(PlannerInfo *root,
  									  RelOptInfo *old_rel,
 @@ -702,6 +703,23 @@ init_dummy_sjinfo(SpecialJoinInfo *sjinfo, Relids left_relids,
@@ -1157,8 +1157,8 @@ index e17d31a..66ac105 100644
 +++ b/src/backend/optimizer/plan/planmain.c
 @@ -30,6 +30,8 @@
  #include "optimizer/planmain.h"
- 
- 
+
+
 +prepare_make_one_rel_hook_type prepare_make_one_rel_hook = NULL;
 +
  /*
@@ -1167,7 +1167,7 @@ index e17d31a..66ac105 100644
 @@ -274,6 +276,9 @@ query_planner(PlannerInfo *root,
  	 */
  	distribute_row_identity_vars(root);
- 
+
 +	if (prepare_make_one_rel_hook)
 +		prepare_make_one_rel_hook(root, joinlist);
 +
@@ -1175,23 +1175,25 @@ index e17d31a..66ac105 100644
  	 * Ready to do the primary planning.
  	 */
 diff --git a/src/backend/optimizer/util/pathnode.c b/src/backend/optimizer/util/pathnode.c
-index c42742d..82e8c28 100644
+index c42742d..4c56015 100644
 --- a/src/backend/optimizer/util/pathnode.c
 +++ b/src/backend/optimizer/util/pathnode.c
-@@ -39,6 +39,9 @@ typedef enum
+@@ -39,6 +39,11 @@ typedef enum
  	COSTS_DIFFERENT,			/* neither path dominates the other on cost */
  } PathCostComparison;
- 
+
 +add_path_hook_type add_path_hook = NULL;
 +add_partial_path_hook_type add_partial_path_hook = NULL;
++add_path_precheck_hook_type add_path_precheck_hook = NULL;
++add_partial_path_precheck_hook_type add_partial_path_precheck_hook = NULL;
 +
  /*
   * STD_FUZZ_FACTOR is the normal fuzz factor for compare_path_costs_fuzzily.
   * XXX is it worth making this user-controllable?  It provides a tradeoff
-@@ -358,8 +361,26 @@ set_cheapest(RelOptInfo *parent_rel)
+@@ -358,8 +363,26 @@ set_cheapest(RelOptInfo *parent_rel)
  	parent_rel->cheapest_parameterized_paths = parameterized_paths;
  }
- 
+
 +
  /*
   * add_path
@@ -1215,7 +1217,7 @@ index c42742d..82e8c28 100644
   *	  Consider a potential implementation path for the specified parent rel,
   *	  and add it to the rel's pathlist if it is worthy of consideration.
   *	  A path is worthy if it has a better sort order (better pathkeys) or
-@@ -417,7 +438,7 @@ set_cheapest(RelOptInfo *parent_rel)
+@@ -417,7 +440,7 @@ set_cheapest(RelOptInfo *parent_rel)
   * Returns nothing, but modifies parent_rel->pathlist.
   */
  void
@@ -1224,8 +1226,47 @@ index c42742d..82e8c28 100644
  {
  	bool		accept_new = true;	/* unless we find a superior old path */
  	int			insert_at = 0;	/* where to insert new item */
-@@ -706,6 +727,26 @@ add_path_precheck(RelOptInfo *parent_rel,
- 
+@@ -627,6 +650,29 @@ add_path(RelOptInfo *parent_rel, Path *new_path)
+  *	  We assume we know the path's pathkeys and parameterization accurately,
+  *	  and have lower bounds for its costs.
+  *
++ * 	  The precise policy followed by add_path_precheck is determined by the
++ *    add_path_precheck_hook. The default policy is specified by
++ *    standard_add_path_precheck.
++ *
++ */
++bool
++add_path_precheck(RelOptInfo *parent_rel, Cost startup_cost, Cost total_cost,
++                  List *pathkeys, Relids required_outer)
++{
++    if (add_path_precheck_hook)
++        return (*add_path_precheck_hook) (parent_rel, startup_cost,
++                                          total_cost, pathkeys, required_outer);
++    else
++        return standard_add_path_precheck(parent_rel, startup_cost,
++                                           total_cost, pathkeys, required_outer);
++}
++
++/*
++ * standard_add_path_precheck
++ *	  Check whether a proposed new path could possibly get accepted.
++ *	  We assume we know the path's pathkeys and parameterization accurately,
++ *	  and have lower bounds for its costs.
++ *
+  * Note that we do not know the path's rowcount, since getting an estimate for
+  * that is too expensive to do before prechecking.  We assume here that paths
+  * of a superset parameterization will generate fewer rows; if that holds,
+@@ -639,7 +685,7 @@ add_path(RelOptInfo *parent_rel, Path *new_path)
+  * so the required information has to be passed piecemeal.
+  */
+ bool
+-add_path_precheck(RelOptInfo *parent_rel,
++standard_add_path_precheck(RelOptInfo *parent_rel,
+ 				  Cost startup_cost, Cost total_cost,
+ 				  List *pathkeys, Relids required_outer)
+ {
+@@ -706,6 +752,26 @@ add_path_precheck(RelOptInfo *parent_rel,
+
  /*
   * add_partial_path
 + *    Similar to add_path, but for partial paths.
@@ -1251,7 +1292,7 @@ index c42742d..82e8c28 100644
   *	  Like add_path, our goal here is to consider whether a path is worthy
   *	  of being kept around, but the considerations here are a bit different.
   *	  A partial path is one which can be executed in any number of workers in
-@@ -744,7 +785,7 @@ add_path_precheck(RelOptInfo *parent_rel,
+@@ -744,7 +810,7 @@ add_path_precheck(RelOptInfo *parent_rel,
   *	  referenced by partial BitmapHeapPaths.
   */
  void
@@ -1260,6 +1301,42 @@ index c42742d..82e8c28 100644
  {
  	bool		accept_new = true;	/* unless we find a superior old path */
  	int			insert_at = 0;	/* where to insert new item */
+@@ -855,6 +921,26 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path)
+  * add_partial_path_precheck
+  *	  Check whether a proposed new partial path could possibly get accepted.
+  *
++ * 	  The precise policy followed by add_partial_path_precheck is determined by the
++ *    add_partial_path_precheck_hook. The default policy is specified by
++ *    standard_add_partial_path_precheck.
++ */
++bool
++add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost,
++                          List *pathkeys)
++{
++    if (add_partial_path_precheck_hook)
++        return (*add_partial_path_precheck_hook) (parent_rel, total_cost,
++                                                   pathkeys);
++    else
++        return standard_add_partial_path_precheck(parent_rel, total_cost,
++                                                   pathkeys);
++}
++
++/*
++ * standard_add_partial_path_precheck
++ *	  Check whether a proposed new partial path could possibly get accepted.
++ *
+  * Unlike add_path_precheck, we can ignore startup cost and parameterization,
+  * since they don't matter for partial paths (see add_partial_path).  But
+  * we do want to make sure we don't add a partial path if there's already
+@@ -862,7 +948,7 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path)
+  * is surely a loser.
+  */
+ bool
+-add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost,
++standard_add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost,
+ 						  List *pathkeys)
+ {
+ 	ListCell   *p1;
 diff --git a/src/bin/initdb/initdb.c b/src/bin/initdb/initdb.c
 index b050355..1ecebad 100644
 --- a/src/bin/initdb/initdb.c
@@ -1267,7 +1344,7 @@ index b050355..1ecebad 100644
 @@ -813,15 +813,6 @@ get_id(void)
  {
  	const char *username;
- 
+
 -#ifndef WIN32
 -	if (geteuid() == 0)			/* 0 is root's uid */
 -	{
@@ -1278,7 +1355,7 @@ index b050355..1ecebad 100644
 -#endif
 -
  	username = get_user_name_or_exit(progname);
- 
+
  	return pg_strdup(username);
 diff --git a/src/bin/pg_ctl/pg_ctl.c b/src/bin/pg_ctl/pg_ctl.c
 index ed97eb3..3258523 100644
@@ -1287,7 +1364,7 @@ index ed97eb3..3258523 100644
 @@ -2238,21 +2238,6 @@ main(int argc, char **argv)
  		}
  	}
- 
+
 -	/*
 -	 * Disallow running as root, to forestall any possible security holes.
 -	 */
@@ -1313,7 +1390,7 @@ index e9dcb5a..1772cee 100644
 @@ -328,22 +328,6 @@ main(int argc, char *argv[])
  		exit(1);
  	}
- 
+
 -	/*
 -	 * Don't allow pg_resetwal to be run as root, to avoid overwriting the
 -	 * ownership of files in the data directory. We need only check for root
@@ -1331,7 +1408,7 @@ index e9dcb5a..1772cee 100644
 -#endif
 -
  	get_restricted_token();
- 
+
  	/* Set mask based on PGDATA permissions */
 diff --git a/src/bin/pg_rewind/pg_rewind.c b/src/bin/pg_rewind/pg_rewind.c
 index 052c83b..2b7fb23 100644
@@ -1340,7 +1417,7 @@ index 052c83b..2b7fb23 100644
 @@ -270,22 +270,6 @@ main(int argc, char **argv)
  		exit(1);
  	}
- 
+
 -	/*
 -	 * Don't allow pg_rewind to be run as root, to avoid overwriting the
 -	 * ownership of files in the data directory. We need only check for root
@@ -1358,16 +1435,16 @@ index 052c83b..2b7fb23 100644
 -#endif
 -
  	get_restricted_token();
- 
+
  	/* Set mask based on PGDATA permissions */
 diff --git a/src/include/commands/explain.h b/src/include/commands/explain.h
 index 9b8b351..e390fb3 100644
 --- a/src/include/commands/explain.h
 +++ b/src/include/commands/explain.h
 @@ -142,4 +142,14 @@ extern void ExplainCloseGroup(const char *objtype, const char *labelname,
- 
+
  extern DestReceiver *CreateExplainSerializeDestReceiver(ExplainState *es);
- 
+
 +extern PGDLLIMPORT char *PLANNER_TYPE_UNSET;
 +extern PGDLLIMPORT char *PLANNER_TYPE_CUSTOM;
 +extern PGDLLIMPORT char *PLANNER_TYPE_DEFAULT;
@@ -1386,7 +1463,7 @@ index b1c51a4..ee02165 100644
 @@ -72,6 +72,140 @@ extern PGDLLIMPORT bool enable_presorted_aggregate;
  extern PGDLLIMPORT bool enable_async_append;
  extern PGDLLIMPORT int constraint_exclusion;
- 
+
 +/* Hook for plugins to provide own cardinality estimates for base rels */
 +typedef double (*set_baserel_size_estimates_hook_type) (PlannerInfo *root, RelOptInfo *rel);
 +extern PGDLLIMPORT set_baserel_size_estimates_hook_type set_baserel_size_estimates_hook;
@@ -1538,7 +1615,7 @@ index b1c51a4..ee02165 100644
 @@ -213,4 +351,87 @@ extern double compute_bitmap_pages(PlannerInfo *root, RelOptInfo *baserel,
  								   Path *bitmapqual, double loop_count,
  								   Cost *cost_p, double *tuples_p);
- 
+
 +/* Prototypes of default cost estimation functions */
 +extern void standard_cost_seqscan(Path *path, PlannerInfo *root, RelOptInfo *baserel,
 +								  ParamPathInfo *param_info);
@@ -1624,23 +1701,31 @@ index b1c51a4..ee02165 100644
 +
  #endif							/* COST_H */
 diff --git a/src/include/optimizer/pathnode.h b/src/include/optimizer/pathnode.h
-index 112e7c2..6792aaa 100644
+index 112e7c2..89b263f 100644
 --- a/src/include/optimizer/pathnode.h
 +++ b/src/include/optimizer/pathnode.h
-@@ -18,6 +18,12 @@
+@@ -18,6 +18,20 @@
  #include "nodes/pathnodes.h"
- 
- 
+
+
 +typedef void (*add_path_hook_type) (RelOptInfo *parent_rel, Path *new_path);
 +extern add_path_hook_type add_path_hook;
 +
 +typedef void (*add_partial_path_hook_type) (RelOptInfo *parent_rel, Path *new_path);
 +extern add_partial_path_hook_type add_partial_path_hook;
 +
++typedef bool (*add_path_precheck_hook_type) (RelOptInfo *parent_rel,
++                                             Cost startup_cost, Cost total_cost,
++                                             List *pathkeys, Relids required_outer);
++extern add_path_precheck_hook_type add_path_precheck_hook;
++typedef bool (*add_partial_path_precheck_hook_type) (RelOptInfo *parent_rel,
++                                                    Cost total_cost, List *pathkeys);
++extern add_partial_path_precheck_hook_type add_partial_path_precheck_hook;
++
  /*
   * prototypes for pathnode.c
   */
-@@ -27,10 +33,12 @@ extern int	compare_fractional_path_costs(Path *path1, Path *path2,
+@@ -27,12 +41,19 @@ extern int	compare_fractional_path_costs(Path *path1, Path *path2,
  										  double fraction);
  extern void set_cheapest(RelOptInfo *parent_rel);
  extern void add_path(RelOptInfo *parent_rel, Path *new_path);
@@ -1648,11 +1733,18 @@ index 112e7c2..6792aaa 100644
  extern bool add_path_precheck(RelOptInfo *parent_rel,
  							  Cost startup_cost, Cost total_cost,
  							  List *pathkeys, Relids required_outer);
++extern bool standard_add_path_precheck(RelOptInfo *parent_rel,
++                                       Cost startup_cost, Cost total_cost,
++                                       List *pathkeys, Relids required_outer);
  extern void add_partial_path(RelOptInfo *parent_rel, Path *new_path);
 +extern void standard_add_partial_path(RelOptInfo *parent_rel, Path *new_path);
  extern bool add_partial_path_precheck(RelOptInfo *parent_rel,
  									  Cost total_cost, List *pathkeys);
- 
++extern bool standard_add_partial_path_precheck(RelOptInfo *parent_rel,
++                                               Cost total_cost, List *pathkeys);
+
+ extern Path *create_seqscan_path(PlannerInfo *root, RelOptInfo *rel,
+ 								 Relids required_outer, int parallel_workers);
 diff --git a/src/include/optimizer/paths.h b/src/include/optimizer/paths.h
 index 5e88c02..0455983 100644
 --- a/src/include/optimizer/paths.h
@@ -1660,17 +1752,17 @@ index 5e88c02..0455983 100644
 @@ -48,6 +48,9 @@ typedef RelOptInfo *(*join_search_hook_type) (PlannerInfo *root,
  											  List *initial_rels);
  extern PGDLLIMPORT join_search_hook_type join_search_hook;
- 
+
 +typedef RelOptInfo *(*make_join_rel_hook_type) (PlannerInfo *root,
 +												RelOptInfo *rel1, RelOptInfo *rel2);
 +extern PGDLLIMPORT make_join_rel_hook_type make_join_rel_hook;
- 
+
  extern RelOptInfo *make_one_rel(PlannerInfo *root, List *joinlist);
  extern RelOptInfo *standard_join_search(PlannerInfo *root, int levels_needed,
 @@ -94,6 +97,41 @@ extern void add_paths_to_joinrel(PlannerInfo *root, RelOptInfo *joinrel,
  								 JoinType jointype, SpecialJoinInfo *sjinfo,
  								 List *restrictlist);
- 
+
 +extern Path *get_memoize_path(PlannerInfo *root,
 +							  RelOptInfo *innerrel, RelOptInfo *outerrel,
 +							  Path *inner_path, Path *outer_path,
@@ -1725,7 +1817,7 @@ index aafc173..948c178 100644
 @@ -24,6 +24,10 @@ extern PGDLLIMPORT double cursor_tuple_fraction;
  /* query_planner callback to compute query_pathkeys */
  typedef void (*query_pathkeys_callback) (PlannerInfo *root, void *extra);
- 
+
 +/* callback for optimizer plugins before make_one_rel is called, but after root is initialized */
 +typedef void (*prepare_make_one_rel_hook_type) (PlannerInfo *root, List *joinlist);
 +extern PGDLLIMPORT prepare_make_one_rel_hook_type prepare_make_one_rel_hook;
