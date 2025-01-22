@@ -128,7 +128,7 @@ cd $PG_TARGET_DIR
 echo ".. Installing pg_lab extension"
 mkdir -p $WD/pg_lab/build
 cd $WD/pg_lab/build
-cmake ..
+PG_INSTALL_DIR=$PG_BUILD_DIR cmake ..
 make -j $MAKE_CORES
 
 if [ -f $PG_BUILD_DIR/lib/pg_lab.so ] ; then
@@ -151,7 +151,7 @@ else
         sed -i "s/#\{0,1\}port = 5432/port = $PG_PORT/" $PGDATA/postgresql.conf
     fi
 
-    echo "... Adding pg_buffercache, pg_hint_plan and pg_prewarm to preload libraries"
+    echo "... Adding pg_buffercache, pg_lab and pg_prewarm to preload libraries"
     sed -i "s/#\{0,1\}shared_preload_libraries.*/shared_preload_libraries = 'pg_buffercache,pg_lab,pg_prewarm'/" $PGDATA/postgresql.conf
     echo "pg_prewarm.autoprewarm = false" >>  $PGDATA/postgresql.conf
 

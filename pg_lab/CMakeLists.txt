@@ -10,6 +10,14 @@ set(CMAKE_GENERATOR "Unix Makefiles")
 set(CXX_STANDARD_REQUIRED 20)
 add_compile_options(-fPIC -ggdb -O0)
 
+if (DEFINED ENV{PG_INSTALL_DIR})
+    set(PG_INSTALL_DIR $ENV{PG_INSTALL_DIR})
+else()
+    set(PG_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../postgres-server/dist")
+endif()
+
+message(STATUS "Using PostgreSQL server path: ${PG_INSTALL_DIR}")
+
 #
 # Antlr4 config
 #
@@ -21,6 +29,7 @@ set(ANTLR_BUILD_SHARED OFF)     # in my case I built the static version
 set(ANTLR_TAG 4.13.1)           # to specify the GitHub tag for the jar too
 set(DISABLE_WARNINGS ON)        # Antlr gives a few deprecation warnings for me
 set(ANTLR_BUILD_CPP_TESTS OFF)  # to avoid creating dist folder
+set(ANTLR_BUILD_CPP_EXAMPLES OFF)
 
 set(ANTLR_EXECUTABLE "${CMAKE_CURRENT_BINARY_DIR}/antlr-${ANTLR_TAG}-complete.jar") # a local path for antlr.jar
 if(NOT EXISTS "${ANTLR_EXECUTABLE}")
@@ -57,8 +66,8 @@ target_link_libraries(pg_lab PRIVATE antlr4_static)
 
 target_include_directories(pg_lab PRIVATE include)
 target_include_directories(pg_lab PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../postgres-server/dist/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../postgres-server/dist/include/server")
+    "${PG_INSTALL_DIR}/include"
+    "${PG_INSTALL_DIR}/include/server")
 target_include_directories(pg_lab PRIVATE
     "${antlr_SOURCE_DIR}/runtime/Cpp/runtime/src"
     "${ANTLR_HintBlockGrammar_OUTPUT_DIR}")

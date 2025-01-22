@@ -17,6 +17,7 @@ INIT=$(echo "$PATH" | grep "$PG_BIN_PATH")
 PGPORT=$(grep "port =" $PG_INSTALL_DIR/data/postgresql.conf | awk '{print $3}')
 
 if [ -z "$INIT" ] ; then
+    export PG_INSTALL_DIR
 	export PG_BIN_PATH
 	export PGPORT
 	export PG_CTL_PATH="$WD"
