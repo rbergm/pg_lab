@@ -4,6 +4,12 @@ WD=$PWD
 NCORES=$(($(nproc --all) / 2))
 PG_PATH="../postgres-server"
 
+if [ "$1" = "--help" ] ; then
+    echo "Usage: $0 [path-to-postgres-source]"
+    echo " Generates a new patch file for the current changes in the postgres source"
+    exit 0
+fi
+
 if [ ! -z "$1" ]; then
     PG_PATH=$1
 fi

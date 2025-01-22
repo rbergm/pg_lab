@@ -67,6 +67,8 @@ dkms.conf
 *.swp
 .vscode/
 postgres-server/
+postgres-server-*/
 build/
+patches/*.bak
 
 *.log

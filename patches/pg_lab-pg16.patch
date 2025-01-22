@@ -11,10 +11,10 @@ index 4e91139..ec70caa 100644
 +dist/
 +pg.log
 diff --git a/configure b/configure
-index 71155f4..8f2d91b 100755
+index 8c2ab3a..21534bd 100755
 --- a/configure
 +++ b/configure
-@@ -19371,7 +19371,7 @@ fi
+@@ -19423,7 +19423,7 @@ fi
  
  
  cat >>confdefs.h <<_ACEOF
@@ -165,10 +165,10 @@ index 6c2e5c8..0fb38f1 100644
  }
  
 diff --git a/src/backend/main/main.c b/src/backend/main/main.c
-index ed11e8b..0c44aa8 100644
+index 84d65aa..b9764a0 100644
 --- a/src/backend/main/main.c
 +++ b/src/backend/main/main.c
-@@ -58,7 +58,7 @@ static void check_root(const char *progname);
+@@ -59,7 +59,7 @@ static void check_root(const char *progname);
  int
  main(int argc, char *argv[])
  {
@@ -177,11 +177,11 @@ index ed11e8b..0c44aa8 100644
  
  	reached_main = true;
  
-@@ -385,6 +385,8 @@ help(const char *progname)
+@@ -387,6 +387,8 @@ help(const char *progname)
  static void
  check_root(const char *progname)
  {
-+    return;
++   return;
 +
  #ifndef WIN32
  	if (geteuid() == 0)
@@ -1169,40 +1169,23 @@ index 7afd434..28984b8 100644
  	/*
  	 * Ready to do the primary planning.
  	 */
-diff --git a/src/backend/optimizer/plan/planner.c b/src/backend/optimizer/plan/planner.c
-index 0ab9bea..6e23581 100644
---- a/src/backend/optimizer/plan/planner.c
-+++ b/src/backend/optimizer/plan/planner.c
-@@ -333,10 +333,10 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
- 	 * MATERIALIZED VIEW to use parallel plans, but this is safe only because
- 	 * the command is writing into a completely new table which workers won't
- 	 * be able to see.  If the workers could see the table, the fact that
--	 * group locking would cause them to ignore the leader's heavyweight
--	 * GIN page locks would make this unsafe.  We'll have to fix that somehow
--	 * if we want to allow parallel inserts in general; updates and deletes
--	 * have additional problems especially around combo CIDs.)
-+	 * group locking would cause them to ignore the leader's heavyweight GIN
-+	 * page locks would make this unsafe.  We'll have to fix that somehow if
-+	 * we want to allow parallel inserts in general; updates and deletes have
-+	 * additional problems especially around combo CIDs.)
- 	 *
- 	 * We don't try to use parallel mode unless interruptible.  The leader
- 	 * expects ProcessInterrupts() calls to reach HandleParallelMessages().
 diff --git a/src/backend/optimizer/util/pathnode.c b/src/backend/optimizer/util/pathnode.c
-index bd02b7b..9c7c413 100644
+index bd02b7b..50422ee 100644
 --- a/src/backend/optimizer/util/pathnode.c
 +++ b/src/backend/optimizer/util/pathnode.c
-@@ -44,6 +44,9 @@ typedef enum
+@@ -44,6 +44,11 @@ typedef enum
  	COSTS_DIFFERENT				/* neither path dominates the other on cost */
  } PathCostComparison;
  
 +add_path_hook_type add_path_hook = NULL;
 +add_partial_path_hook_type add_partial_path_hook = NULL;
++add_path_precheck_hook_type add_path_precheck_hook = NULL;
++add_partial_path_precheck_hook_type add_partial_path_precheck_hook = NULL;
 +
  /*
   * STD_FUZZ_FACTOR is the normal fuzz factor for compare_path_costs_fuzzily.
   * XXX is it worth making this user-controllable?  It provides a tradeoff
-@@ -365,8 +368,26 @@ set_cheapest(RelOptInfo *parent_rel)
+@@ -365,8 +370,26 @@ set_cheapest(RelOptInfo *parent_rel)
  	parent_rel->cheapest_parameterized_paths = parameterized_paths;
  }
  
@@ -1229,7 +1212,7 @@ index bd02b7b..9c7c413 100644
   *	  Consider a potential implementation path for the specified parent rel,
   *	  and add it to the rel's pathlist if it is worthy of consideration.
   *	  A path is worthy if it has a better sort order (better pathkeys) or
-@@ -424,7 +445,7 @@ set_cheapest(RelOptInfo *parent_rel)
+@@ -424,7 +447,7 @@ set_cheapest(RelOptInfo *parent_rel)
   * Returns nothing, but modifies parent_rel->pathlist.
   */
  void
@@ -1238,7 +1221,46 @@ index bd02b7b..9c7c413 100644
  {
  	bool		accept_new = true;	/* unless we find a superior old path */
  	int			insert_at = 0;	/* where to insert new item */
-@@ -711,6 +732,25 @@ add_path_precheck(RelOptInfo *parent_rel,
+@@ -634,6 +657,29 @@ add_path(RelOptInfo *parent_rel, Path *new_path)
+  *	  We assume we know the path's pathkeys and parameterization accurately,
+  *	  and have lower bounds for its costs.
+  *
++ * 	  The precise policy followed by add_path_precheck is determined by the
++ *    add_path_precheck_hook. The default policy is specified by
++ *    standard_add_path_precheck.
++ *
++ */
++bool
++add_path_precheck(RelOptInfo *parent_rel, Cost startup_cost, Cost total_cost,
++                  List *pathkeys, Relids required_outer)
++{
++    if (add_path_precheck_hook)
++        return (*add_path_precheck_hook) (parent_rel, startup_cost,
++                                          total_cost, pathkeys, required_outer);
++    else
++        return standard_add_path_precheck(parent_rel, startup_cost,
++                                           total_cost, pathkeys, required_outer);
++}
++
++/*
++ * standard_add_path_precheck
++ *	  Check whether a proposed new path could possibly get accepted.
++ *	  We assume we know the path's pathkeys and parameterization accurately,
++ *	  and have lower bounds for its costs.
++ *
+  * Note that we do not know the path's rowcount, since getting an estimate for
+  * that is too expensive to do before prechecking.  We assume here that paths
+  * of a superset parameterization will generate fewer rows; if that holds,
+@@ -646,7 +692,7 @@ add_path(RelOptInfo *parent_rel, Path *new_path)
+  * so the required information has to be passed piecemeal.
+  */
+ bool
+-add_path_precheck(RelOptInfo *parent_rel,
++standard_add_path_precheck(RelOptInfo *parent_rel,
+ 				  Cost startup_cost, Cost total_cost,
+ 				  List *pathkeys, Relids required_outer)
+ {
+@@ -711,6 +757,25 @@ add_path_precheck(RelOptInfo *parent_rel,
  	return true;
  }
  
@@ -1264,7 +1286,7 @@ index bd02b7b..9c7c413 100644
  /*
   * add_partial_path
   *	  Like add_path, our goal here is to consider whether a path is worthy
-@@ -751,7 +791,7 @@ add_path_precheck(RelOptInfo *parent_rel,
+@@ -751,7 +816,7 @@ add_path_precheck(RelOptInfo *parent_rel,
   *	  referenced by partial BitmapHeapPaths.
   */
  void
@@ -1273,11 +1295,47 @@ index bd02b7b..9c7c413 100644
  {
  	bool		accept_new = true;	/* unless we find a superior old path */
  	int			insert_at = 0;	/* where to insert new item */
+@@ -862,6 +927,26 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path)
+  * add_partial_path_precheck
+  *	  Check whether a proposed new partial path could possibly get accepted.
+  *
++ * 	  The precise policy followed by add_partial_path_precheck is determined by the
++ *    add_partial_path_precheck_hook. The default policy is specified by
++ *    standard_add_partial_path_precheck.
++ */
++bool
++add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost,
++                          List *pathkeys)
++{
++    if (add_partial_path_precheck_hook)
++        return (*add_partial_path_precheck_hook) (parent_rel, total_cost,
++                                                   pathkeys);
++    else
++        return standard_add_partial_path_precheck(parent_rel, total_cost,
++                                                   pathkeys);
++}
++
++/*
++ * standard_add_partial_path_precheck
++ *	  Check whether a proposed new partial path could possibly get accepted.
++ *
+  * Unlike add_path_precheck, we can ignore startup cost and parameterization,
+  * since they don't matter for partial paths (see add_partial_path).  But
+  * we do want to make sure we don't add a partial path if there's already
+@@ -869,7 +954,7 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path)
+  * is surely a loser.
+  */
+ bool
+-add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost,
++standard_add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost,
+ 						  List *pathkeys)
+ {
+ 	ListCell   *p1;
 diff --git a/src/bin/initdb/initdb.c b/src/bin/initdb/initdb.c
-index 458dc11..0eb961d 100644
+index 3dbade0..40d097a 100644
 --- a/src/bin/initdb/initdb.c
 +++ b/src/bin/initdb/initdb.c
-@@ -754,15 +754,6 @@ get_id(void)
+@@ -809,15 +809,6 @@ get_id(void)
  {
  	const char *username;
  
@@ -1294,7 +1352,7 @@ index 458dc11..0eb961d 100644
  
  	return pg_strdup(username);
 diff --git a/src/bin/pg_ctl/pg_ctl.c b/src/bin/pg_ctl/pg_ctl.c
-index fc160b0..b92333c 100644
+index 1465b19..53a657b 100644
 --- a/src/bin/pg_ctl/pg_ctl.c
 +++ b/src/bin/pg_ctl/pg_ctl.c
 @@ -2241,21 +2241,6 @@ main(int argc, char **argv)
@@ -1347,7 +1405,7 @@ index ca57713..aa8903c 100644
  
  	/* Set mask based on PGDATA permissions */
 diff --git a/src/bin/pg_rewind/pg_rewind.c b/src/bin/pg_rewind/pg_rewind.c
-index 53110e0..e124e39 100644
+index c2c0f0b..1e9c549 100644
 --- a/src/bin/pg_rewind/pg_rewind.c
 +++ b/src/bin/pg_rewind/pg_rewind.c
 @@ -261,22 +261,6 @@ main(int argc, char **argv)
@@ -1636,10 +1694,10 @@ index 6cf4970..de64da0 100644
 +
  #endif							/* COST_H */
 diff --git a/src/include/optimizer/pathnode.h b/src/include/optimizer/pathnode.h
-index 001e75b..7fa7c8b 100644
+index 001e75b..48d502d 100644
 --- a/src/include/optimizer/pathnode.h
 +++ b/src/include/optimizer/pathnode.h
-@@ -18,6 +18,12 @@
+@@ -18,6 +18,20 @@
  #include "nodes/pathnodes.h"
  
  
@@ -1649,10 +1707,18 @@ index 001e75b..7fa7c8b 100644
 +typedef void (*add_partial_path_hook_type) (RelOptInfo *parent_rel, Path *new_path);
 +extern add_partial_path_hook_type add_partial_path_hook;
 +
++typedef bool (*add_path_precheck_hook_type) (RelOptInfo *parent_rel,
++                                             Cost startup_cost, Cost total_cost,
++                                             List *pathkeys, Relids required_outer);
++extern add_path_precheck_hook_type add_path_precheck_hook;
++typedef bool (*add_partial_path_precheck_hook_type) (RelOptInfo *parent_rel,
++                                                    Cost total_cost, List *pathkeys);
++extern add_partial_path_precheck_hook_type add_partial_path_precheck_hook;
++
  /*
   * prototypes for pathnode.c
   */
-@@ -27,10 +33,12 @@ extern int	compare_fractional_path_costs(Path *path1, Path *path2,
+@@ -27,12 +41,19 @@ extern int	compare_fractional_path_costs(Path *path1, Path *path2,
  										  double fraction);
  extern void set_cheapest(RelOptInfo *parent_rel);
  extern void add_path(RelOptInfo *parent_rel, Path *new_path);
@@ -1660,11 +1726,18 @@ index 001e75b..7fa7c8b 100644
  extern bool add_path_precheck(RelOptInfo *parent_rel,
  							  Cost startup_cost, Cost total_cost,
  							  List *pathkeys, Relids required_outer);
++extern bool standard_add_path_precheck(RelOptInfo *parent_rel,
++                                       Cost startup_cost, Cost total_cost,
++                                       List *pathkeys, Relids required_outer);
  extern void add_partial_path(RelOptInfo *parent_rel, Path *new_path);
 +extern void standard_add_partial_path(RelOptInfo *parent_rel, Path *new_path);
  extern bool add_partial_path_precheck(RelOptInfo *parent_rel,
  									  Cost total_cost, List *pathkeys);
++extern bool standard_add_partial_path_precheck(RelOptInfo *parent_rel,
++                                               Cost total_cost, List *pathkeys);
  
+ extern Path *create_seqscan_path(PlannerInfo *root, RelOptInfo *rel,
+ 								 Relids required_outer, int parallel_workers);
 diff --git a/src/include/optimizer/paths.h b/src/include/optimizer/paths.h
 index 50bc3b5..97f5408 100644
 --- a/src/include/optimizer/paths.h
