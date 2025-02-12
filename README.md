@@ -56,6 +56,19 @@ global paths, etc. are modified. See `./postgres-setup.sh --help` for additional
 Make sure to have the appropriate build tools available on your system. The setup has been tested for Ubuntu 22.04, but should
 also work for other Linux distributions.
 
+> [!IMPORTANT]
+> Depending on your distribution, the Postgres build process will require a number of libraries to be available on your system.
+> For Ubuntu-ish systems, these can be installed like so
+>
+> ```sh
+> sudo apt install -y \
+>    build-essential sudo tzdata procps \
+>    bison flex curl pkg-config libicu-dev libreadline-dev libssl-dev cmake \
+>    git vim unzip zstd default-jre \
+> ```
+>
+> For other package managers, please consult the corresponding documentation to determine your specific set of packages.
+
 
 ## Usage
 

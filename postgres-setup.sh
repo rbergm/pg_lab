@@ -108,7 +108,7 @@ fi
 
 cd $PG_TARGET_DIR
 echo ".. Building Postgres $PG_VER_PRETTY"
-./configure --prefix=$PG_TARGET_DIR/dist $PG_BUILDOPTS
+./configure --prefix=$PG_TARGET_DIR/dist --with-openssl $PG_BUILDOPTS
 make clean && make -j $MAKE_CORES && make install
 export PATH="$PG_BUILD_DIR/bin:$PATH"
 export LD_LIBRARY_PATH="$PG_BUILD_DIR/lib:$LD_LIBRARY_PATH"
