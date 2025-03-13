@@ -126,15 +126,12 @@ cd $PG_TARGET_DIR
 
 
 echo ".. Installing pg_lab extension"
-mkdir -p $WD/pg_lab/build
-cd $WD/pg_lab/build
+PGLAB_DIR=$WD/extensions/pg_lab
+mkdir -p $PGLAB_DIR/build
+cd $PG_BUILD_DIR/build
 PG_INSTALL_DIR=$PG_BUILD_DIR cmake ..
 make -j $MAKE_CORES
-
-if [ -f $PG_BUILD_DIR/lib/pg_lab.so ] ; then
-    rm $PG_BUILD_DIR/lib/pg_lab.so
-fi
-ln -s $PWD/libpg_lab.so $PG_BUILD_DIR/lib/pg_lab.so
+ln -sf $PWD/libpg_lab.so $PG_BUILD_DIR/lib/pg_lab.so
 
 
 echo ".. Initializing Postgres Server environment"

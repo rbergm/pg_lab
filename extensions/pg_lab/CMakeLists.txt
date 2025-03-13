@@ -13,7 +13,7 @@ add_compile_options(-fPIC -ggdb -O0)
 if (DEFINED ENV{PG_INSTALL_DIR})
     set(PG_INSTALL_DIR $ENV{PG_INSTALL_DIR})
 else()
-    set(PG_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../postgres-server/dist")
+    set(PG_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../postgres-server/dist")
 endif()
 
 message(STATUS "Using PostgreSQL server path: ${PG_INSTALL_DIR}")
