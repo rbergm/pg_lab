@@ -1,0 +1,4 @@
+[submodule "postgres"]
+	path = postgres
+	url = https://github.com/rbergm/postgres
+	ignore = all
