@@ -317,6 +317,7 @@ void add_path_handler(add_path_handler_type handler, RelOptInfo *parent_rel, Pat
         return;
     }
 
+    /* Check whether the candidate path is compatible with the join order hint */
     if (current_hints->join_order_hint && parent_rel->reloptkind == RELOPT_JOINREL)
     {
         JoinOrder *jnode;
@@ -529,6 +530,12 @@ join_search_fallback(PlannerInfo *root, int levels_needed, List *initial_rels)
     return result;
 }
 
+/*
+ * While we normally enforce the join order in the hint_aware_add_path function, there is one corner-case that is handled here:
+ * If the user only supplied a join order and no operator hints, and if additionally the query would be optimized using GEQO,
+ * we still want the operator selection to be handled by GEQO. Therefore, we use a special GEQO-style join "search" to generate
+ * the final RelOptInfo. In all other cases, we simply fall back to the standard policies.
+ */
 extern "C" RelOptInfo *
 hint_aware_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 {
@@ -555,6 +562,7 @@ hint_aware_cost_seqscan(Path *path, PlannerInfo *root, RelOptInfo *baserel, Para
 {
     bool hint_found = false;
     CostHashEntry *hint_entry;
+    Cost startup_cost, total_cost;
 
     if (prev_cost_seqscan_hook)
         (*prev_cost_seqscan_hook)(path, root, baserel, param_info);
@@ -568,8 +576,13 @@ hint_aware_cost_seqscan(Path *path, PlannerInfo *root, RelOptInfo *baserel, Para
     if (!hint_found)
         return;
 
-    path->startup_cost = hint_entry->costs.scan_cost.seqscan_startup;
-    path->total_cost = hint_entry->costs.scan_cost.seqscan_total;
+    startup_cost = hint_entry->costs.scan_cost.seqscan_startup;
+    total_cost = hint_entry->costs.scan_cost.seqscan_total;
+
+    if (!isnan(startup_cost))
+        path->startup_cost = startup_cost;
+    if (!isnan(total_cost))
+        path->total_cost = total_cost;
 }
 
 extern "C" void
@@ -577,6 +590,7 @@ hint_aware_cost_idxscan(IndexPath *path, PlannerInfo *root, double loop_count, b
 {
     bool hint_found = false;
     CostHashEntry *hint_entry;
+    Cost startup_cost, total_cost;
 
     if (prev_cost_index_hook)
         (*prev_cost_index_hook)(path, root, loop_count, partial_path);
@@ -590,8 +604,13 @@ hint_aware_cost_idxscan(IndexPath *path, PlannerInfo *root, double loop_count, b
     if (!hint_found)
         return;
 
-    path->path.startup_cost = hint_entry->costs.scan_cost.idxscan_startup;
-    path->path.total_cost = hint_entry->costs.scan_cost.idxscan_total;
+    startup_cost = hint_entry->costs.scan_cost.idxscan_startup;
+    total_cost = hint_entry->costs.scan_cost.idxscan_total;
+
+    if (!isnan(startup_cost))
+        path->path.startup_cost = startup_cost;
+    if (!isnan(total_cost))
+        path->path.total_cost = total_cost;
 }
 
 extern "C" void
@@ -600,6 +619,7 @@ hint_aware_cost_bitmapscan(Path *path, PlannerInfo *root, RelOptInfo *baserel, P
 {
     bool hint_found = false;
     CostHashEntry *hint_entry;
+    Cost startup_cost, total_cost;
 
     if (prev_cost_bitmap_heap_scan_hook)
         (*prev_cost_bitmap_heap_scan_hook)(path, root, baserel, param_info, bitmapqual, loop_count);
@@ -613,8 +633,13 @@ hint_aware_cost_bitmapscan(Path *path, PlannerInfo *root, RelOptInfo *baserel, P
     if (!hint_found)
         return;
 
-    path->startup_cost = hint_entry->costs.scan_cost.bitmap_startup;
-    path->total_cost = hint_entry->costs.scan_cost.bitmap_total;
+    startup_cost = hint_entry->costs.scan_cost.bitmap_startup;
+    total_cost = hint_entry->costs.scan_cost.bitmap_total;
+
+    if (!isnan(startup_cost))
+        path->startup_cost = startup_cost;
+    if (!isnan(total_cost))
+        path->total_cost = total_cost;
 }
 
 extern "C" void
@@ -627,6 +652,7 @@ hint_aware_initial_cost_nestloop(PlannerInfo *root,
     bool hint_found = false;
     CostHashEntry *hint_entry;
     Relids join_relids = EMPTY_BITMAP;
+    Cost startup_cost, total_cost;
 
     if (prev_initial_cost_nestloop_hook)
         (*prev_initial_cost_nestloop_hook)(root, workspace, jointype, outer_path, inner_path, extra);
@@ -642,8 +668,13 @@ hint_aware_initial_cost_nestloop(PlannerInfo *root,
     if (!hint_found)
         return;
 
-    workspace->startup_cost = hint_entry->costs.join_cost.nestloop_startup;
-    workspace->total_cost = hint_entry->costs.join_cost.nestloop_total;
+    startup_cost = hint_entry->costs.join_cost.nestloop_startup;
+    total_cost = hint_entry->costs.join_cost.nestloop_total;
+
+    if (!isnan(startup_cost))
+        workspace->startup_cost = startup_cost;
+    if (!isnan(total_cost))
+        workspace->total_cost = total_cost;
 }
 
 extern "C" void
@@ -655,6 +686,7 @@ hint_aware_final_cost_nestloop(PlannerInfo *root, NestPath *path,
     CostHashEntry *hint_entry;
     Path *raw_path;
     Relids relids;
+    Cost startup_cost, total_cost;
 
     if (prev_final_cost_nestloop_hook)
         (*prev_final_cost_nestloop_hook)(root, path, workspace, extra);
@@ -669,8 +701,13 @@ hint_aware_final_cost_nestloop(PlannerInfo *root, NestPath *path,
     if (!hint_found)
         return;
 
-    raw_path->startup_cost = hint_entry->costs.join_cost.nestloop_startup;
-    raw_path->total_cost = hint_entry->costs.join_cost.nestloop_total;
+    startup_cost = hint_entry->costs.join_cost.nestloop_startup;
+    total_cost = hint_entry->costs.join_cost.nestloop_total;
+
+    if (!isnan(startup_cost))
+        raw_path->startup_cost = startup_cost;
+    if (!isnan(total_cost))
+        raw_path->total_cost = total_cost;
 }
 
 
@@ -686,6 +723,7 @@ hint_aware_initial_cost_hashjoin(PlannerInfo *root,
     bool hint_found = false;
     CostHashEntry *hint_entry;
     Relids join_relids = EMPTY_BITMAP;
+    Cost startup_cost, total_cost;
 
     if (prev_initial_cost_hashjoin_hook)
         (*prev_initial_cost_hashjoin_hook)(root, workspace, jointype, hashclauses, outer_path, inner_path, extra, parallel_hash);
@@ -701,8 +739,13 @@ hint_aware_initial_cost_hashjoin(PlannerInfo *root,
     if (!hint_found)
         return;
 
-    workspace->startup_cost = hint_entry->costs.join_cost.hash_startup;
-    workspace->total_cost = hint_entry->costs.join_cost.hash_total;
+    startup_cost = hint_entry->costs.join_cost.hash_startup;
+    total_cost = hint_entry->costs.join_cost.hash_total;
+
+    if (!isnan(startup_cost))
+        workspace->startup_cost = startup_cost;
+    if (!isnan(total_cost))
+        workspace->total_cost = total_cost;
 }
 
 extern "C" void
@@ -714,6 +757,7 @@ hint_aware_final_cost_hashjoin(PlannerInfo *root, HashPath *path,
     CostHashEntry *hint_entry;
     Path *raw_path;
     Relids relids;
+    Cost startup_cost, total_cost;
 
     if (prev_final_cost_hashjoin_hook)
         (*prev_final_cost_hashjoin_hook)(root, path, workspace, extra);
@@ -728,8 +772,13 @@ hint_aware_final_cost_hashjoin(PlannerInfo *root, HashPath *path,
     if (!hint_found)
         return;
 
-    raw_path->startup_cost = hint_entry->costs.join_cost.hash_startup;
-    raw_path->total_cost = hint_entry->costs.join_cost.hash_total;
+    startup_cost = hint_entry->costs.join_cost.hash_startup;
+    total_cost = hint_entry->costs.join_cost.hash_total;
+
+    if (!isnan(startup_cost))
+        raw_path->startup_cost = startup_cost;
+    if (!isnan(total_cost))
+        raw_path->total_cost = total_cost;
 }
 
 extern "C" void
@@ -744,6 +793,7 @@ hint_aware_intial_cost_mergejoin(PlannerInfo *root,
     bool hint_found = false;
     CostHashEntry *hint_entry;
     Relids join_relids = EMPTY_BITMAP;
+    Cost startup_cost, total_cost;
 
     if (prev_initial_cost_mergejoin_hook)
         (*prev_initial_cost_mergejoin_hook)(root, workspace, jointype, mergeclauses, outer_path, inner_path,
@@ -761,8 +811,13 @@ hint_aware_intial_cost_mergejoin(PlannerInfo *root,
     if (!hint_found)
         return;
 
-    workspace->startup_cost = hint_entry->costs.join_cost.merge_startup;
-    workspace->total_cost = hint_entry->costs.join_cost.merge_total;
+    startup_cost = hint_entry->costs.join_cost.merge_startup;
+    total_cost = hint_entry->costs.join_cost.merge_total;
+
+    if (!isnan(startup_cost))
+        workspace->startup_cost = startup_cost;
+    if (!isnan(total_cost))
+        workspace->total_cost = total_cost;
 }
 
 extern "C" void
@@ -774,6 +829,7 @@ hint_aware_final_cost_mergejoin(PlannerInfo *root, MergePath *path,
     CostHashEntry *hint_entry;
     Path *raw_path;
     Relids relids;
+    Cost startup_cost, total_cost;
 
     if (prev_final_cost_mergejoin_hook)
         (*prev_final_cost_mergejoin_hook)(root, path, workspace, extra);
@@ -788,8 +844,13 @@ hint_aware_final_cost_mergejoin(PlannerInfo *root, MergePath *path,
     if (!hint_found)
         return;
 
-    raw_path->startup_cost = hint_entry->costs.join_cost.merge_startup;
-    raw_path->total_cost = hint_entry->costs.join_cost.merge_total;
+    startup_cost = hint_entry->costs.join_cost.merge_startup;
+    total_cost = hint_entry->costs.join_cost.merge_total;
+
+    if (!isnan(startup_cost))
+        raw_path->startup_cost = startup_cost;
+    if (!isnan(total_cost))
+        raw_path->total_cost = total_cost;
 }
 
 extern "C" void
