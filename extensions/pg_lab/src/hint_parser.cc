@@ -301,9 +301,14 @@ void init_hints(PlannerInfo *root, PlannerHints *hints) {
     hints->raw_query = current_query_string;
     hints->mode = ANCHORED;
 
+    if (!current_query_string)
+    {
+        hints->contains_hint = false;
+        return;
+    }
+
     std::string *query_buffer = new std::string(hints->raw_query);
 
-    /* TODO: invoke hint parser, extract and resolve aliases to OIDs */
     auto hint_block_start = query_buffer->find("/*=pg_lab=");
     auto hint_block_end = query_buffer->find("*/");
     if (hint_block_start == std::string::npos || hint_block_end == std::string::npos)
