@@ -66,9 +66,7 @@ dkms.conf
 # Project-specific files
 *.swp
 .vscode/
-postgres-server/
-postgres-server-*/
+servers/*/
 build/
-patches/*.bak
 
 *.log

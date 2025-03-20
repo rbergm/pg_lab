@@ -2,14 +2,6 @@
 
 WD=$(pwd)
 
-if [ -z "$1" ] ; then
-	PG_INSTALL_DIR=$WD/postgres-server/dist
-elif [[ "$1" = /* ]] ; then
-	PG_INSTALL_DIR="$1"
-else
-	PG_INSTALL_DIR="$WD/$1"
-fi
-
 echo ".. Stopping Postgres Server"
 . ./postgres-load-env.sh "$1"
 

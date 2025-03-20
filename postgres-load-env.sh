@@ -3,13 +3,16 @@
 WD=$(pwd)
 
 if [ -z "$1" ] ; then
-	PG_INSTALL_DIR=$WD/postgres-server/dist
+	PG_INSTALL_DIR=$(ls -d $WD/servers/*/ | grep "pg-" | tail -n 1)
 elif [[ "$1" = /* ]] ; then
 	PG_INSTALL_DIR="$1"
+elif [ $(ls -d $WD/servers/*/ | grep "$1") ] ; then
+	PG_INSTALL_DIR="$WD/servers/$1"
 else
-	PG_INSTALL_DIR="$WD/$1"
+    PG_INSTALL_DIR="$WD/servers/$1"
 fi
 
+PG_INSTALL_DIR=${PG_INSTALL_DIR%/}
 cd $PG_INSTALL_DIR
 
 PG_BIN_PATH="$PG_INSTALL_DIR/bin"

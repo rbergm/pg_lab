@@ -66,8 +66,7 @@ target_link_libraries(pg_lab PRIVATE antlr4_static)
 
 target_include_directories(pg_lab PRIVATE include)
 target_include_directories(pg_lab PRIVATE
-    "${PG_INSTALL_DIR}/include"
-    "${PG_INSTALL_DIR}/include/server")
+    "${PG_INSTALL_DIR}")
 target_include_directories(pg_lab PRIVATE
     "${antlr_SOURCE_DIR}/runtime/Cpp/runtime/src"
     "${ANTLR_HintBlockGrammar_OUTPUT_DIR}")

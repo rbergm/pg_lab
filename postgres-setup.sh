@@ -1,16 +1,22 @@
 #!/bin/bash
 
+# Check if the script is being sourced
+if [ "${BASH_SOURCE[0]}" != "${0}" ] || [ -n "$ZSH_VERSION" -a "${(%):-%N}" != "$0" ]; then
+    echo "This script should not be sourced. Please run it as ./$0"
+    return 1
+fi
+
 set -e  # exit on error
 
 WD=$(pwd)
 USER=$(whoami)
 PG_VER_PRETTY=17
 PG_VERSION=REL_17_STABLE
-PG_PATCH_DIR=$WD/patches
-PG_PATCH=$PG_PATCH_DIR/pg_lab-pg17.patch
-PG_TARGET_DIR="$WD/postgres-server"
+PG_SRC_DIR="$WD/postgres"
+PG_TARGET_DIR="$WD/servers"
+FORCE_TARGET_DIR="false"
 PG_DEFAULT_PORT=5432
-PG_PORT=5432
+PG_PORT=$PG_DEFAULT_PORT
 MAKE_CORES=$(($(nproc --all) / 2))
 ENABLE_REMOTE_ACCESS="false"
 USER_PASSWORD=""
@@ -24,7 +30,7 @@ show_help() {
     echo -e "Setup a local Postgres server with the given options. The default user is the current UNIX username.\n"
     echo -e "Allowed options:"
     echo -e "--pg-ver <version>\t\tSetup Postgres with the given version.${NEWLINE}Currently allowed values: 16, 17 (default))"
-    echo -e "-d | --dir <directory>\t\tInstall Postgres server to the designated directory (postgres-server by default)."
+    echo -e "-d | --dir <directory>\t\tInstall Postgres server to the designated directory (servers by default)."
     echo -e "-p | --port <port number>\tConfigure the Postgres server to listen on the given port (5432 by default)."
     echo -e "--remote-password <password>\tEnable remote access for the current user, based on the given password.${NEWLINE}Remote access is disabled if no password is provided."
     echo -e "--debug\t\t\t\tProduce a debug build of the Postgres server"
@@ -39,12 +45,10 @@ while [ $# -gt 0 ] ; do
                 16)
                     PG_VER_PRETTY="16"
                     PG_VERSION=REL_16_STABLE
-                    PG_PATCH=$PG_PATCH_DIR/pg_lab-pg16.patch
                     ;;
                 17)
                     PG_VER_PRETTY="17"
                     PG_VERSION=REL_17_STABLE
-                    PG_PATCH=$PG_PATCH_DIR/pg_lab-pg17.patch
                     ;;
                 *)
                     show_help
@@ -54,10 +58,11 @@ while [ $# -gt 0 ] ; do
             shift
             ;;
         -d|--dir)
+            FORCE_TARGET_DIR="true"
             if [[ "$2" = /* ]] ; then
                 PG_TARGET_DIR=$2
             else
-                PG_TARGET_DIR=$WD/$2
+                PG_TARGET_DIR="$WD/$2"
                 echo "... Normalizing relative target directory to $PG_TARGET_DIR"
             fi
             shift
@@ -91,57 +96,49 @@ while [ $# -gt 0 ] ; do
     esac
 done
 
-PG_BUILD_DIR=$PG_TARGET_DIR/dist
-export PGDATA=$PG_BUILD_DIR/data
-
-
-if [ -d $PG_TARGET_DIR ] ; then
-    echo ".. Directory $PG_TARGET_DIR already exists, assuming this is a (patched) Postgres installation and re-using"
-else
-    echo ".. Cloning Postgres $PG_VER_PRETTY"
-    git clone --depth 1 --branch $PG_VERSION https://github.com/postgres/postgres.git $PG_TARGET_DIR
-
-    cd $PG_TARGET_DIR
-    echo ".. Applying pg_lab patches for Postgres $PG_VER_PRETTY"
-    git apply $PG_PATCH
+if [ "$FORCE_TARGET_DIR" == "false" ] ; then
+    PG_TARGET_DIR="$PG_TARGET_DIR/pg-$PG_VER_PRETTY"
 fi
+export PGDATA="$PG_TARGET_DIR/data"
 
-cd $PG_TARGET_DIR
 echo ".. Building Postgres $PG_VER_PRETTY"
-./configure --prefix=$PG_TARGET_DIR/dist --with-openssl $PG_BUILDOPTS
+cd $PG_SRC_DIR
+git submodule update --init
+git switch $PG_VERSION && git pull
+
+./configure --prefix=$PG_TARGET_DIR --with-openssl $PG_BUILDOPTS
 make clean && make -j $MAKE_CORES && make install
-export PATH="$PG_BUILD_DIR/bin:$PATH"
-export LD_LIBRARY_PATH="$PG_BUILD_DIR/lib:$LD_LIBRARY_PATH"
-export C_INCLUDE_PATH="$PG_BUILD_DIR/include/server:$C_INCLUDE_PATH"
+export PATH="$PG_TARGET_DIR/bin:$PATH"
+export LD_LIBRARY_PATH="$PG_TARGET_DIR/lib:$LD_LIBRARY_PATH"
+export C_INCLUDE_PATH="$PG_TARGET_DIR/include/server:$C_INCLUDE_PATH"
 
 echo ".. Installing pg_prewarm extension"
-cd $PG_TARGET_DIR/contrib/pg_prewarm
+cd $PG_SRC_DIR/contrib/pg_prewarm
 make -j $MAKE_CORES && make install
-cd $PG_TARGET_DIR
 
 echo ".. Installing pg_buffercache extension"
-cd $PG_TARGET_DIR/contrib/pg_buffercache
+cd $PG_SRC_DIR/contrib/pg_buffercache
 make -j $MAKE_CORES && make install
-cd $PG_TARGET_DIR
 
 
 echo ".. Installing pg_lab extension"
 PGLAB_DIR=$WD/extensions/pg_lab
-mkdir -p $PGLAB_DIR/build
-cd $PG_BUILD_DIR/build
-PG_INSTALL_DIR=$PG_BUILD_DIR cmake ..
+mkdir -p $PGLAB_DIR/build && cd $PGLAB_DIR/build
+PG_INSTALL_DIR="$PG_TARGET_DIR/include/postgresql/server/" cmake ..
 make -j $MAKE_CORES
-ln -sf $PWD/libpg_lab.so $PG_BUILD_DIR/lib/pg_lab.so
+ln -sf $PWD/libpg_lab.so $PG_TARGET_DIR/lib/postgresql/pg_lab.so
 
 
 echo ".. Initializing Postgres Server environment"
 cd $PG_TARGET_DIR
 
-if [ -d $PG_BUILD_DIR/data ] ; then
+SERVER_STARTED="true"
+if [ -d "$PGDATA" ] ; then
+    SERVER_STARTED="false"
     echo "... Data directory exists, leaving as-is"
 else
     echo "... Creating cluster"
-    initdb -D $PG_BUILD_DIR/data
+    initdb -D $PGDATA
 
     if [ "$PG_PORT" != "$PG_DEFAULT_PORT" ] ; then
         echo "... Updating Postgres port to $PG_PORT"
@@ -152,8 +149,8 @@ else
     sed -i "s/#\{0,1\}shared_preload_libraries.*/shared_preload_libraries = 'pg_buffercache,pg_lab,pg_prewarm'/" $PGDATA/postgresql.conf
     echo "pg_prewarm.autoprewarm = false" >>  $PGDATA/postgresql.conf
 
-    echo "... Starting Postgres (log file is pg.log)"
-    pg_ctl -D $PGDATA -l pg.log start
+    echo "... Starting Postgres (log file is $PGDATA/pg.log)"
+    pg_ctl -D $PGDATA -l "$PGDATA/pg.log" start
 
     echo "... Creating user database for $USER"
     createdb -p $PG_PORT $USER
@@ -166,7 +163,7 @@ else
     fi
 fi
 
-if [ "$STOP_AFTER" == "true" ] ; then
+if [ "$STOP_AFTER" == "true" -a "$SERVER_STARTED" == "true" ] ; then
     pg_ctl -D $PGDATA stop
     echo ".. Setup done"
 else
