@@ -66,7 +66,7 @@ dkms.conf
 # Project-specific files
 *.swp
 .vscode/
-servers/*/
+pg-build/*/
 build/
 
 *.log

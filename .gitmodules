@@ -1,4 +1,4 @@
 [submodule "postgres"]
-	path = postgres
+	path = pg-source
 	url = https://github.com/rbergm/postgres
 	ignore = all

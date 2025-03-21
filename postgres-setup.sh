@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Check if the script is being sourced
-if [ "${BASH_SOURCE[0]}" != "${0}" ] || [ -n "$ZSH_VERSION" -a "${(%):-%N}" != "$0" ]; then
-    echo "This script should not be sourced. Please run it as ./$0"
+# Assert that we are not sourcing
+if [ -n "$BASH_VERSION" -a "$BASH_SOURCE" != "$0" ] || [ -n "$ZSH_VERSION" -a "$ZSH_EVAL_CONTEX" != "toplevel" ] ; then
+    echo "This script should not be sourced. Please run it as ./postgres-setup.sh" 1>&2
     return 1
 fi
 
@@ -12,8 +12,8 @@ WD=$(pwd)
 USER=$(whoami)
 PG_VER_PRETTY=17
 PG_VERSION=REL_17_STABLE
-PG_SRC_DIR="$WD/postgres"
-PG_TARGET_DIR="$WD/servers"
+PG_SRC_DIR="$WD/pg-source"
+PG_TARGET_DIR="$WD/pg-build"
 FORCE_TARGET_DIR="false"
 PG_DEFAULT_PORT=5432
 PG_PORT=$PG_DEFAULT_PORT
@@ -30,7 +30,7 @@ show_help() {
     echo -e "Setup a local Postgres server with the given options. The default user is the current UNIX username.\n"
     echo -e "Allowed options:"
     echo -e "--pg-ver <version>\t\tSetup Postgres with the given version.${NEWLINE}Currently allowed values: 16, 17 (default))"
-    echo -e "-d | --dir <directory>\t\tInstall Postgres server to the designated directory (servers by default)."
+    echo -e "-d | --dir <directory>\t\tInstall Postgres server to the designated directory (pg-build by default)."
     echo -e "-p | --port <port number>\tConfigure the Postgres server to listen on the given port (5432 by default)."
     echo -e "--remote-password <password>\tEnable remote access for the current user, based on the given password.${NEWLINE}Remote access is disabled if no password is provided."
     echo -e "--debug\t\t\t\tProduce a debug build of the Postgres server"
@@ -126,7 +126,7 @@ PGLAB_DIR=$WD/extensions/pg_lab
 mkdir -p $PGLAB_DIR/build && cd $PGLAB_DIR/build
 PG_INSTALL_DIR="$PG_TARGET_DIR/include/postgresql/server/" cmake ..
 make -j $MAKE_CORES
-ln -sf $PWD/libpg_lab.so $PG_TARGET_DIR/lib/postgresql/pg_lab.so
+cp $PWD/libpg_lab.so $PG_TARGET_DIR/lib/postgresql/pg_lab.so
 
 
 echo ".. Initializing Postgres Server environment"
