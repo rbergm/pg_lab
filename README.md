@@ -1,5 +1,8 @@
 # pg_lab
 
+![GitHub License](https://img.shields.io/github/license/rbergm/pg_lab)
+![Static Badge](https://img.shields.io/badge/version-0.1.0-blue)
+
 <img src="assets/pg_lab_logo.png" width="256" alt="The Logo of pg_lab: a blue elephant wearing a chemist's coat is surrounded by various reagents." />
 
 _pg\_lab_ is a research-focused fork of PostgreSQL. Its goal is to enable research into the design of query optimizers for
@@ -43,7 +46,7 @@ extension points to implement its custom behavior. The fundamental control-flow 
 | Disabling specific operators | ✅ `NoNestLoop`, etc. hints | ❌ Not supported but planned |
 | Custom cardinality estimates for joins | ✅ `Rows` hint | ✅ `Card` hint |
 | Custom cardinality estimates for base tables | ❌ Not supported | ✅ `Card` hint |
-| Parallel workers for joins | ✅ `Parallel` hint | ❌ Not supported
+| Parallel workers for joins | ✅ `Parallel` hint | ❌ Not supported (⏳ but planned)
 | Storing and automatically re-using hint sets | ✅ Specific hint table | ❌ Not supported
 | Custom cost estimates for joins | ❌ Not supported | ✅ Specific hints, e.g. `NestLoop(a b (COST start=4.2 total=42.42))`
 | Custom cost estimates for base tables | ❌ Not supported | ✅ Specific hints, e.g. `SeqScan(a (COST start=4.2 total=42.42))`
