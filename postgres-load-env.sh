@@ -17,7 +17,7 @@ fi
 # Assert that we are sourcing
 if [ -n "$BASH_VERSION" -a "$BASH_SOURCE" == "$0" ] || [ -n "$ZSH_VERSION" -a "$ZSH_EVAL_CONTEX" == "toplevel" ] ; then
     echo "This script must be sourced. Please run it as . ./postgres-load-env.sh" 1>&2
-    return 1
+    exit 1
 fi
 
 WD=$(pwd)
@@ -27,9 +27,9 @@ if [ -z "$1" ] ; then
 elif [[ "$1" = /* ]] ; then
 	PG_INSTALL_DIR="$1"
 else
-    if [ -z "$(ls -F $WD/pg-build/ | grep -E '/$')"] ; then
+    if [ -z "$(ls -F $WD/pg-build/ | grep -E '/$')" ] ; then
         echo "No PG installations found" 1>&2
-        return 1
+        exit 1
     fi
 
     if [ $(ls -d $WD/pg-build/*/ | grep "$1") ] ; then

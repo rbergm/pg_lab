@@ -63,8 +63,9 @@ also work for other Linux distributions.
 > ```sh
 > sudo apt install -y \
 >    build-essential sudo tzdata procps \
->    bison flex curl pkg-config libicu-dev libreadline-dev libssl-dev cmake \
+>    bison flex curl pkg-config cmake llvm clang \
 >    git vim unzip zstd default-jre \
+>    libicu-dev libreadline-dev libssl-dev liblz4-dev libossp-uuid-dev
 > ```
 >
 > For other package managers, please consult the corresponding documentation to determine your specific set of packages.

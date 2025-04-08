@@ -21,7 +21,7 @@ MAKE_CORES=$(($(nproc --all) / 2))
 ENABLE_REMOTE_ACCESS="false"
 USER_PASSWORD=""
 STOP_AFTER="false"
-PG_BUILDOPTS=""
+DEBUG_BUILD="false"
 
 show_help() {
     RET=$1
@@ -80,7 +80,7 @@ while [ $# -gt 0 ] ; do
             shift
             ;;
         --debug)
-            PG_BUILDOPTS="--enable-debug --enable-cassert CFLAGS=\"-O0 -DOPTIMIZER_DEBUG\""
+            DEBUG_BUILD="true"
             shift
             ;;
         --stop)
@@ -106,7 +106,27 @@ cd $PG_SRC_DIR
 git submodule update --init
 git switch $PG_VERSION && git pull
 
-./configure --prefix=$PG_TARGET_DIR --with-openssl $PG_BUILDOPTS
+if [ "$DEBUG_BUILD" == "true" ] ; then
+    ./configure --prefix=$PG_TARGET_DIR \
+        --with-ssl=openssl \
+        --with-python \
+        --with-llvm \
+        --with-lz4 \
+        --with-zstd \
+        --with-uuid=ossp \
+        --enable-debug \
+        --enable-cassert \
+        CFLAGS='-Og'
+else
+    ./configure --prefix=$PG_TARGET_DIR \
+        --with-ssl=openssl \
+        --with-python \
+        --with-llvm \
+        --with-lz4 \
+        --with-zstd \
+        --with-uuid=ossp
+fi
+
 make clean && make -j $MAKE_CORES && make install
 export PATH="$PG_TARGET_DIR/bin:$PATH"
 export LD_LIBRARY_PATH="$PG_TARGET_DIR/lib:$LD_LIBRARY_PATH"
@@ -124,9 +144,8 @@ make -j $MAKE_CORES && make install
 echo ".. Installing pg_lab extension"
 PGLAB_DIR=$WD/extensions/pg_lab
 mkdir -p $PGLAB_DIR/build && cd $PGLAB_DIR/build
-PG_INSTALL_DIR="$PG_TARGET_DIR/include/postgresql/server/" cmake ..
+PG_INSTALL_DIR="$PG_TARGET_DIR" cmake ..
 make -j $MAKE_CORES
-cp $PWD/libpg_lab.so $PG_TARGET_DIR/lib/postgresql/pg_lab.so
 
 
 echo ".. Initializing Postgres Server environment"

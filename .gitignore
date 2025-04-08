@@ -67,6 +67,7 @@ dkms.conf
 *.swp
 .vscode/
 pg-build/*/
+pg-build/head
 build/
 
 *.log
