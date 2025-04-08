@@ -13,7 +13,7 @@ add_compile_options(-fPIC -ggdb -O0)
 if (DEFINED ENV{PG_INSTALL_DIR})
     set(PG_INSTALL_DIR $ENV{PG_INSTALL_DIR})
 else()
-    set(PG_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../postgres-server/dist")
+    set(PG_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../pg-build/pg-17")
 endif()
 
 message(STATUS "Using PostgreSQL server path: ${PG_INSTALL_DIR}")
@@ -66,7 +66,12 @@ target_link_libraries(pg_lab PRIVATE antlr4_static)
 
 target_include_directories(pg_lab PRIVATE include)
 target_include_directories(pg_lab PRIVATE
-    "${PG_INSTALL_DIR}")
+    "${PG_INSTALL_DIR}/include/postgresql/server")
 target_include_directories(pg_lab PRIVATE
     "${antlr_SOURCE_DIR}/runtime/Cpp/runtime/src"
     "${ANTLR_HintBlockGrammar_OUTPUT_DIR}")
+
+add_custom_command(TARGET pg_lab POST_BUILD
+    COMMAND cp libpg_lab.so "${PG_INSTALL_DIR}/lib/postgresql/pg_lab.so"
+    COMMENT "Copying pg_lab to PostgreSQL server extension directory at ${PG_INSTALL_DIR}/lib/postgresql/"
+)

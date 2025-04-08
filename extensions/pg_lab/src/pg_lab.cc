@@ -135,81 +135,6 @@ char *current_query_string = NULL;
 static PlannerInfo *current_planner_root = NULL;
 static PlannerHints *current_hints = NULL;
 
-static RelOptInfo *
-fetch_reloptinfo(PlannerInfo *root, Relids relids)
-{
-    List        *candidate_relopts;
-    ListCell    *lc;
-    int          level;
-
-    level = bms_num_members(relids);
-    candidate_relopts = root->join_rel_level[level];
-
-    foreach (lc, candidate_relopts)
-    {
-        RelOptInfo *rel = (RelOptInfo *) lfirst(lc);
-        if (bms_equal(rel->relids, relids))
-            return rel;
-    }
-
-    return NULL;
-}
-
-RelOptInfo *
-force_join_order(PlannerInfo* root, int levels_needed, List* initial_rels)
-{
-    JoinOrder           *join_order;
-    JoinOrderIterator   iterator;
-    JoinOrder           *current_node;
-    ListCell            *lc;
-    RelOptInfo          *final_rel;
-
-    /* Initialize important PlannerInfo data, same as standard_join_search() does */
-    root->join_rel_level = (List **) palloc0((levels_needed + 1) * sizeof(List *));
-    root->join_rel_level[1] = initial_rels;
-
-    /* Initialize join order iterator */
-    join_order = ((PlannerHints *) root->join_search_private)->join_order_hint;
-    init_join_order_iterator(&iterator, join_order);
-    join_order_iterator_next(&iterator); /* Iterator starts at base rels, skip these */
-
-    /* Main "optimization" loop */
-    while (!iterator.done)
-    {
-        foreach (lc, iterator.current_nodes)
-        {
-            RelOptInfo *outer_rel = NULL;
-            RelOptInfo *inner_rel = NULL;
-            RelOptInfo *join_rel = NULL;
-            current_node = (JoinOrder*) lfirst(lc);
-            Assert(current_node->node_type == JOIN_REL);
-
-            outer_rel = fetch_reloptinfo(root, current_node->outer_child->relids);
-            inner_rel = fetch_reloptinfo(root, current_node->inner_child->relids);
-            Assert(outer_rel); Assert(inner_rel);
-
-            /* XXX: this way we cannot force join directions. But: do we really need to? */
-            root->join_cur_level = bms_num_members(current_node->relids);
-            join_rel = make_join_rel(root, outer_rel, inner_rel);
-
-            /* Post-process the join_rel same way as standard_join_search() does */
-            generate_partitionwise_join_paths(root, join_rel);
-            if (!bms_equal(join_rel->relids, root->all_query_rels))
-				generate_useful_gather_paths(root, join_rel, false);
-            set_cheapest(join_rel);
-        }
-
-        join_order_iterator_next(&iterator);
-    }
-
-    /* Post-process generated relations, same as standard_join_search() does */
-    final_rel = (RelOptInfo *) linitial(root->join_rel_level[levels_needed]);
-    root->join_rel_level = NULL;
-
-    free_join_order_iterator(&iterator);
-    return final_rel;
-}
-
 
 extern "C" PlannedStmt *
 hint_aware_planner(Query* parse, const char* query_string, int cursorOptions, ParamListInfo boundParams)
@@ -278,12 +203,13 @@ correct_memoize_materialize_usage(JoinPath *join_path, Path *inner_path)
 {
     bool hint_found = false;
     OperatorHashEntry *inner_hint = (OperatorHashEntry*) hash_search(current_hints->operator_hints,
-                                                                        &(inner_path->parent->relids),
-                                                                        HASH_FIND, &hint_found);
+                                                                     &(inner_path->parent->relids),
+                                                                     HASH_FIND, &hint_found);
 
     if (!hint_found)
     {
         if (current_hints->mode != FULL)
+            /* in ANCHORED plan mode the optimizer is free to insert Memoize/Materialize as it sees fit */
             return true;
 
         /* in FULL plan mode, the inner path might neither be Memoize nor Materialize if it is not hinted to be */
@@ -318,18 +244,35 @@ void add_path_handler(add_path_handler_type handler, RelOptInfo *parent_rel, Pat
     }
 
     /* Check whether the candidate path is compatible with the join order hint */
-    if (current_hints->join_order_hint && parent_rel->reloptkind == RELOPT_JOINREL)
+    if (current_hints->join_order_hint && IsAJoinPath(new_path))
     {
         JoinOrder *jnode;
         JoinPath *jpath;
 
         jnode = traverse_join_order(current_hints->join_order_hint, parent_rel->relids);
-        if (!jnode || !IsAJoinPath(new_path))
+        if (!jnode)
         {
-            (*handler)(parent_rel, new_path);
+            /*
+             * At this point we know that we a) did force a join order via a hint and b) that the new_path is not on this
+             * join order. But, we do not automatically reject this path, even if this feels counter-intuitive. The reason
+             * is that we do not want to end up with a RelOptInfo that has no paths at all because this would lead to a planner
+             * error. This is precisely what would happen if we rejected all paths here. Instead, we let the first candidate
+             * path be added to construct a sound RelOptInfo.
+             * Notice that this cannot result in a situation where the wrong plan is chosen because we ultimately will end up
+             * with a RelOptInfo that is on our join order (at the latest when we add paths to the final join relation).
+             * As soon as this is the case, we will reject all paths that refer to the wrong RelOptInfos.
+             */
+            if (parent_rel->pathlist == NIL)
+                (*handler)(parent_rel, new_path);
             return;
         }
 
+        /*
+         * At this point we know that the candidate path is on our join order.
+         * Now we just need to make sure that this is also true for its child relations.
+         * Since we construct the join order in a bottom-up manner, we can be sure that the child relations further down in
+         * our path are already correct.
+         */
         jpath = (JoinPath*) new_path;
         if (!bms_equal(jnode->inner_child->relids, jpath->innerjoinpath->parent->relids))
             return;
