@@ -1,6 +1,6 @@
 #!/bin/bash
 
-if [ "$1" == "--help" ] || [ "$1" == "-h" ] ; then
+if [ "$1" = "--help" ] || [ "$1" = "-h" ] ; then
     echo "Usage: . ./postgres-start.sh [directory]"
     echo "  Starts a Postgres server and initializes the shell environment for the server."
     echo "  Initialization includes setting the general PATH, LD_LIBRARY_PATH, C_INCLUDE_PATH variables as well as the PG-specific PGDATA and PGPORT."
@@ -14,7 +14,7 @@ if [ "$1" == "--help" ] || [ "$1" == "-h" ] ; then
     exit 0
 fi
 
-if [ -n "$BASH_VERSION" -a "$BASH_SOURCE" == "$0" ] || [ -n "$ZSH_VERSION" -a "$ZSH_EVAL_CONTEX" == "toplevel" ] ; then
+if [ -n "$BASH_VERSION" -a "$BASH_SOURCE" = "$0" ] || [ -n "$ZSH_VERSION" -a "$ZSH_EVAL_CONTEXT" = "toplevel" ] ; then
     echo "WARNING: This script should be sourced to make the Postgres binaries available in PATH. Please run it as . ./postgres-start.sh" 1>&2
 fi
 

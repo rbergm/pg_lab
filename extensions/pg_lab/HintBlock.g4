@@ -1,7 +1,7 @@
 grammar HintBlock;
 options { caseInsensitive = true; }
 
-hint_block : HBLOCK_START hints* HBLOCK_END ;
+hint_block : HBLOCK_START hints* HBLOCK_END EOF ;
 
 hints
     : setting_hint

@@ -71,6 +71,16 @@ also work for other Linux distributions.
 >    libicu-dev libreadline-dev libssl-dev liblz4-dev libossp-uuid-dev
 > ```
 >
+> On MacOS, the following packages can be installed via homebrew:
+>
+> ```zsh
+> brew install \
+>    icu4c openssl llvm e2fsprogs
+> ```
+>
+> Depending on your LLVM configuration, you might need to prefix the setup script with the location of the _llvm-config_,
+> like so: `LLVM_CONFIG="/opt/homebrew/Cellar/llvm/.../bin/llvm-config" ./postgres-setup.sh --your --options`.
+>
 > For other package managers, please consult the corresponding documentation to determine your specific set of packages.
 
 

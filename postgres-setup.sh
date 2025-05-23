@@ -1,7 +1,18 @@
 #!/bin/bash
 
+sed_wrapper() {
+    REPLACEMENT="$1"
+    FILE="$2"
+
+    if [ "$OS_TYPE" = "Darwin" ]; then
+        sed -i '' -e "$REPLACEMENT" "$FILE"
+    else
+        sed -i -e "$REPLACEMENT" "$FILE"
+    fi
+}
+
 # Assert that we are not sourcing
-if [ -n "$BASH_VERSION" -a "$BASH_SOURCE" != "$0" ] || [ -n "$ZSH_VERSION" -a "$ZSH_EVAL_CONTEX" != "toplevel" ] ; then
+if [ -n "$BASH_VERSION" -a "$BASH_SOURCE" != "$0" ] || [ -n "$ZSH_VERSION" -a "$ZSH_EVAL_CONTEXT" != "toplevel" ] ; then
     echo "This script should not be sourced. Please run it as ./postgres-setup.sh" 1>&2
     return 1
 fi
@@ -17,11 +28,22 @@ PG_TARGET_DIR="$WD/pg-build"
 FORCE_TARGET_DIR="false"
 PG_DEFAULT_PORT=5432
 PG_PORT=$PG_DEFAULT_PORT
-MAKE_CORES=$(($(nproc --all) / 2))
 ENABLE_REMOTE_ACCESS="false"
 USER_PASSWORD=""
 STOP_AFTER="false"
 DEBUG_BUILD="false"
+
+OS_TYPE=$(uname)
+if [[ "$OS_TYPE" = "Darwin" ]]; then
+    MAKE_CORES=$(sysctl -n hw.logicalcpu)
+    UUID_FLAGS="--with-uuid=e2fs"
+elif [[ "$OS_TYPE" = "Linux" ]]; then
+    MAKE_CORES=$(nproc)
+    UUID_FLAGS="--with-uuid=ossp"
+else
+    echo "Unsupported operating system: $OS_TYPE"
+    exit 1
+fi
 
 show_help() {
     RET=$1
@@ -96,7 +118,7 @@ while [ $# -gt 0 ] ; do
     esac
 done
 
-if [ "$FORCE_TARGET_DIR" == "false" ] ; then
+if [ "$FORCE_TARGET_DIR" = "false" ] ; then
     PG_TARGET_DIR="$PG_TARGET_DIR/pg-$PG_VER_PRETTY"
 fi
 export PGDATA="$PG_TARGET_DIR/data"
@@ -106,17 +128,16 @@ cd $PG_SRC_DIR
 git submodule update --init
 git switch $PG_VERSION && git pull
 
-if [ "$DEBUG_BUILD" == "true" ] ; then
+if [ "$DEBUG_BUILD" = "true" ] ; then
     ./configure --prefix=$PG_TARGET_DIR \
         --with-ssl=openssl \
         --with-python \
         --with-llvm \
         --with-lz4 \
         --with-zstd \
-        --with-uuid=ossp \
         --enable-debug \
         --enable-cassert \
-        CFLAGS='-Og'
+        $UUID_FLAGS CFLAGS='-Og'
 else
     ./configure --prefix=$PG_TARGET_DIR \
         --with-ssl=openssl \
@@ -124,7 +145,7 @@ else
         --with-llvm \
         --with-lz4 \
         --with-zstd \
-        --with-uuid=ossp
+        $UUID_FLAGS
 fi
 
 make clean && make -j $MAKE_CORES && make install
@@ -161,11 +182,11 @@ else
 
     if [ "$PG_PORT" != "$PG_DEFAULT_PORT" ] ; then
         echo "... Updating Postgres port to $PG_PORT"
-        sed -i "s/#\{0,1\}port = 5432/port = $PG_PORT/" $PGDATA/postgresql.conf
+        sed_wrapper "s/#\{0,1\}port = 5432/port = $PG_PORT/" $PGDATA/postgresql.conf
     fi
 
     echo "... Adding pg_buffercache, pg_lab and pg_prewarm to preload libraries"
-    sed -i "s/#\{0,1\}shared_preload_libraries.*/shared_preload_libraries = 'pg_buffercache,pg_lab,pg_prewarm'/" $PGDATA/postgresql.conf
+    sed_wrapper "s/#\{0,1\}shared_preload_libraries.*/shared_preload_libraries = 'pg_buffercache,pg_lab,pg_prewarm'/" $PGDATA/postgresql.conf
     echo "pg_prewarm.autoprewarm = false" >>  $PGDATA/postgresql.conf
 
     echo "... Starting Postgres (log file is $PGDATA/pg.log)"
@@ -174,15 +195,15 @@ else
     echo "... Creating user database for $USER"
     createdb -p $PG_PORT $USER
 
-    if [ "$ENABLE_REMOTE_ACCESS" == "true" ] ; then
+    if [ "$ENABLE_REMOTE_ACCESS" = "true" ] ; then
         echo "... Enabling remote access for $USER"
         echo -e "#customization\nhost all $USER 0.0.0.0/0 md5" >> $PGDATA/pg_hba.conf
-        sed -i "s/#\{0,1\}listen_addresses = 'localhost'/listen_addresses = '*'/" $PGDATA/postgresql.conf
+        sed_wrapper "s/#\{0,1\}listen_addresses = 'localhost'/listen_addresses = '*'/" $PGDATA/postgresql.conf
         psql -c "ALTER USER $USER WITH PASSWORD '$USER_PASSWORD';"
     fi
 fi
 
-if [ "$STOP_AFTER" == "true" -a "$SERVER_STARTED" == "true" ] ; then
+if [ "$STOP_AFTER" = "true" -a "$SERVER_STARTED" = "true" ] ; then
     pg_ctl -D $PGDATA stop
     echo ".. Setup done"
 else

@@ -8,7 +8,8 @@ include(FetchContent)
 
 set(CMAKE_GENERATOR "Unix Makefiles")
 set(CXX_STANDARD_REQUIRED 20)
-add_compile_options(-fPIC -ggdb -O0)
+set(CMAKE_CXX_STANDARD 20)
+add_compile_options(-fPIC -ggdb -Og)
 
 if (DEFINED ENV{PG_INSTALL_DIR})
     set(PG_INSTALL_DIR $ENV{PG_INSTALL_DIR})
@@ -62,6 +63,12 @@ add_library(pg_lab SHARED
     src/path_gen.cc
     ${ANTLR_HintBlockGrammar_CXX_OUTPUTS})
 
+if(APPLE)
+    set_target_properties(pg_lab PROPERTIES
+        LINK_FLAGS "-undefined dynamic_lookup"
+    )
+endif()
+
 target_link_libraries(pg_lab PRIVATE antlr4_static)
 
 target_include_directories(pg_lab PRIVATE include)
@@ -72,6 +79,8 @@ target_include_directories(pg_lab PRIVATE
     "${ANTLR_HintBlockGrammar_OUTPUT_DIR}")
 
 add_custom_command(TARGET pg_lab POST_BUILD
-    COMMAND cp libpg_lab.so "${PG_INSTALL_DIR}/lib/postgresql/pg_lab.so"
+    COMMAND ${CMAKE_COMMAND} -E copy
+        $<TARGET_FILE:pg_lab>
+        "${PG_INSTALL_DIR}/lib/postgresql/pg_lab.$<IF:$<PLATFORM_ID:Darwin>,dylib,so>"
     COMMENT "Copying pg_lab to PostgreSQL server extension directory at ${PG_INSTALL_DIR}/lib/postgresql/"
 )
