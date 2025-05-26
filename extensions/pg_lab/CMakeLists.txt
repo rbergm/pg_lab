@@ -16,6 +16,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "")
     add_compile_options(-O0)
 elseif (CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_compile_options(-O0)
+endif()
 
 set(PG_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../pg-build/pg-17" CACHE PATH "PostgreSQL server installation directory")
 message(STATUS "Using PostgreSQL server path: ${PG_INSTALL_DIR}")
