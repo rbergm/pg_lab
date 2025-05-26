@@ -4,6 +4,7 @@ extern "C" {
 #include <math.h>
 
 #include "postgres.h"
+#include "miscadmin.h"
 
 #include "commands/explain.h"
 #include "lib/stringinfo.h"
@@ -15,6 +16,7 @@ extern "C" {
 #include "optimizer/planmain.h"
 #include "optimizer/planner.h"
 #include "fmgr.h"
+#include "utils/guc.h"
 #include "utils/hsearch.h"
 
 #include "hints.h"
@@ -76,6 +78,9 @@ extern "C" {
     extern set_joinrel_size_estimates_hook_type set_joinrel_size_estimates_hook;
     static set_joinrel_size_estimates_hook_type prev_joinrel_size_estimates_hook = NULL;
 
+    extern compute_parallel_worker_hook_type compute_parallel_worker_hook;
+    static compute_parallel_worker_hook_type prev_compute_parallel_workers_hook = NULL;
+
     extern cost_seqscan_hook_type cost_seqscan_hook;
     static cost_seqscan_hook_type prev_cost_seqscan_hook = NULL;
 
@@ -129,6 +134,8 @@ extern "C" {
 
 }
 
+static bool enable_pglab = true;
+
 /* Stores the raw query that is currently being optimized in this backend. */
 char *current_query_string = NULL;
 
@@ -139,8 +146,9 @@ static PlannerHints *current_hints = NULL;
 extern "C" PlannedStmt *
 hint_aware_planner(Query* parse, const char* query_string, int cursorOptions, ParamListInfo boundParams)
 {
-    PlannedStmt *result = NULL;
-    current_hints = NULL;
+    PlannedStmt *result;
+
+    current_hints        = NULL;
     current_planner_root = NULL;
     current_query_string = (char*) query_string;
 
@@ -155,10 +163,33 @@ hint_aware_planner(Query* parse, const char* query_string, int cursorOptions, Pa
         result = standard_planner(parse, query_string, cursorOptions, boundParams);
     }
 
-    current_hints = NULL;
+    current_hints        = NULL;
     current_planner_root = NULL;
     current_query_string = NULL;
+
     return result;
+}
+
+extern "C" void
+hint_aware_make_one_rel_prep(PlannerInfo *root, List *joinlist)
+{
+    PlannerHints *hints;
+
+    if (!enable_pglab)
+    {
+        if (prev_prepare_make_one_rel_hook)
+            prev_prepare_make_one_rel_hook(root, joinlist);
+        return;
+    }
+
+    hints = (PlannerHints*) palloc0(sizeof(PlannerHints));
+    init_hints(root, hints);
+
+    if (prev_prepare_make_one_rel_hook)
+        prev_prepare_make_one_rel_hook(root, joinlist);
+
+    current_planner_root = root;
+    current_hints = hints;
 }
 
 extern "C" bool
@@ -194,137 +225,464 @@ typedef void (*add_path_handler_type) (RelOptInfo *parent_rel, Path *new_path);
 /* utility macros inspired by nodeTag and IsA from nodes.h */
 #define pathTag(pathptr) (((const Path*)pathptr)->pathtype)
 #define PathIsA(nodeptr,_type_) (pathTag(nodeptr) == T_ ## _type_)
-#define IsAScanPath(pathptr) (PathIsA(pathptr, SeqScan) || PathIsA(pathptr, IndexScan) || PathIsA(pathptr, BitmapHeapScan))
+#define IsAScanPath(pathptr) (PathIsA(pathptr, SeqScan) || \
+                              PathIsA(pathptr, IndexScan) || \
+                              PathIsA(pathptr, IndexOnlyScan) || \
+                              PathIsA(pathptr, BitmapHeapScan))
 #define IsAJoinPath(pathptr) (PathIsA(pathptr, NestLoop) || PathIsA(pathptr, MergeJoin) || PathIsA(pathptr, HashJoin))
+#define IsAIntermediatePath(pathptr) (PathIsA(pathptr, Memoize) || PathIsA(pathptr, Material))
+#define IsAParPath(pathptr) (PathIsA(pathptr, Gather) || PathIsA(pathptr, GatherMerge))
 
 
 static bool
-correct_memoize_materialize_usage(JoinPath *join_path, Path *inner_path)
+path_satisfies_operator(Path *path, JoinOrder *join_order)
 {
-    bool hint_found = false;
-    OperatorHashEntry *inner_hint = (OperatorHashEntry*) hash_search(current_hints->operator_hints,
-                                                                     &(inner_path->parent->relids),
-                                                                     HASH_FIND, &hint_found);
+    Relids        relids;
+    OperatorHint *op_hint;
+    bool          hint_found;
 
-    if (!hint_found)
+    if (!IsAJoinPath(path) && !IsAScanPath(path) && !IsAIntermediatePath(path))
     {
-        if (current_hints->mode != FULL)
-            /* in ANCHORED plan mode the optimizer is free to insert Memoize/Materialize as it sees fit */
-            return true;
-
-        /* in FULL plan mode, the inner path might neither be Memoize nor Materialize if it is not hinted to be */
-        return !(PathIsA(inner_path, Memoize) || PathIsA(inner_path, Material));
+        /* Could be a gather/gather merge path. We don't force these, so we leave the path be */
+        return true;
     }
 
-    if (inner_hint->materialize_output)
-        return PathIsA(inner_path, Material);
-    else if (current_hints->mode == FULL)
-        return !PathIsA(inner_path, Material);
+    if (join_order)
+    {
+        op_hint = join_order->physical_op;
+        hint_found = op_hint != NULL;
+    }
+    else
+    {
+        relids = path->parent->relids;
+        op_hint = (OperatorHint*) hash_search(current_hints->operator_hints,
+                                              &relids, HASH_FIND, &hint_found);
+    }
 
-    if (inner_hint->memoize_output)
-        return PathIsA(inner_path, Memoize);
-    else if (current_hints->mode == FULL)
-        return !PathIsA(inner_path, Memoize);
+    if (!hint_found)
+        /* Nothing restricts the choice of operators, we are good to continue */
+        return true;
 
-    return true;
+    if (PathIsA(path, Memoize))
+        return op_hint->memoize_output;
+    else if (PathIsA(path, Material))
+        return op_hint->materialize_output;
+
+
+    switch (op_hint->op)
+    {
+        case OP_UNKNOWN:
+            /* We can't check for OP_UNKNOWN earlier, to make sure that the above special cases are handled appropriately */
+            return true;
+        case OP_SEQSCAN:
+            return PathIsA(path, SeqScan);
+        case OP_IDXSCAN:
+            return PathIsA(path, IndexScan) || PathIsA(path, IndexOnlyScan);
+        case OP_BITMAPSCAN:
+            return PathIsA(path, BitmapHeapScan);
+        case OP_NESTLOOP:
+            return PathIsA(path, NestLoop);
+        case OP_HASHJOIN:
+            return PathIsA(path, HashJoin);
+        case OP_MERGEJOIN:
+            return PathIsA(path, MergeJoin);
+        default:
+            /* We don't check for memoize/materialize here, because these are never root nodes of a path */
+            return false;
+    }
 }
 
-void add_path_handler(add_path_handler_type handler, RelOptInfo *parent_rel, Path *new_path)
+
+static bool
+path_satisfies_hints(Path *path, JoinOrder *join_order, Path **gather_child)
 {
-    Relids parent_relids;
-    bool hint_found;
-    OperatorHashEntry *hint_entry;
-    bool reject_path = false;
+    JoinPath *jpath;
+    bool inner_valid, outer_valid;
 
+    /* This recurses, so we need to be as paranoid as the normal optimizer implementation */
+    check_stack_depth();
 
-    if (!current_hints || !current_hints->contains_hint)
+    /*
+     * First up, we handle all intermediate operators
+     */
+    if (!IsAJoinPath(path) && !IsAScanPath(path))
     {
-        (*handler)(parent_rel, new_path);
-        return;
-    }
-
-    /* Check whether the candidate path is compatible with the join order hint */
-    if (current_hints->join_order_hint && IsAJoinPath(new_path))
-    {
-        JoinOrder *jnode;
-        JoinPath *jpath;
-
-        jnode = traverse_join_order(current_hints->join_order_hint, parent_rel->relids);
-        if (!jnode)
+        switch (path->pathtype)
         {
-            /*
-             * At this point we know that we a) did force a join order via a hint and b) that the new_path is not on this
-             * join order. But, we do not automatically reject this path, even if this feels counter-intuitive. The reason
-             * is that we do not want to end up with a RelOptInfo that has no paths at all because this would lead to a planner
-             * error. This is precisely what would happen if we rejected all paths here. Instead, we let the first candidate
-             * path be added to construct a sound RelOptInfo.
-             * Notice that this cannot result in a situation where the wrong plan is chosen because we ultimately will end up
-             * with a RelOptInfo that is on our join order (at the latest when we add paths to the final join relation).
-             * As soon as this is the case, we will reject all paths that refer to the wrong RelOptInfos.
-             */
-            if (parent_rel->pathlist == NIL)
-                (*handler)(parent_rel, new_path);
-            return;
+            case T_Gather:
+            {
+                GatherPath *gpath = (GatherPath*) path;
+                if (gather_child != NULL)
+                    *gather_child = gpath->subpath;
+                return path_satisfies_hints(gpath->subpath, join_order, gather_child);
+            }
+
+            case T_GatherMerge:
+            {
+                GatherMergePath *gmpath = (GatherMergePath*) path;
+                if (gather_child != NULL)
+                    *gather_child = gmpath->subpath;
+                return path_satisfies_hints(gmpath->subpath, join_order, gather_child);
+            }
+
+            case T_Memoize:
+            {
+                MemoizePath *mempath = (MemoizePath*) path;
+                return path_satisfies_operator(path, join_order) &&
+                       path_satisfies_hints(mempath->subpath, join_order, gather_child);
+            }
+
+            case T_Material:
+            {
+                MaterialPath *matpath = (MaterialPath*) path;
+                return path_satisfies_operator(path, join_order) &&
+                       path_satisfies_hints(matpath->subpath, join_order, gather_child);
+            }
+
+            case T_Sort:
+            {
+                SortPath *spath = (SortPath*) path;
+                return path_satisfies_hints(spath->subpath, join_order, gather_child);
+            }
+
+            case T_IncrementalSort:
+            {
+                IncrementalSortPath *ispath = (IncrementalSortPath*) path;
+                return path_satisfies_hints((ispath->spath).subpath, join_order, gather_child);
+            }
+
+            case T_Group:
+            {
+                GroupPath *gpath = (GroupPath*) path;
+                return path_satisfies_hints(gpath->subpath, join_order, gather_child);
+            }
+
+            case T_Agg:
+            {
+                AggPath *apath = (AggPath*) path;
+                return path_satisfies_hints(apath->subpath, join_order, gather_child);
+            }
+
+            case T_Limit:
+            {
+                LimitPath *lpath = (LimitPath*) path;
+                return path_satisfies_hints(lpath->subpath, join_order, gather_child);
+            }
+
+            default:
+                ereport(ERROR, errmsg("[pg_lab] Cannot hint query. Path type is not supported"));
+                break;
         }
-
-        /*
-         * At this point we know that the candidate path is on our join order.
-         * Now we just need to make sure that this is also true for its child relations.
-         * Since we construct the join order in a bottom-up manner, we can be sure that the child relations further down in
-         * our path are already correct.
-         */
-        jpath = (JoinPath*) new_path;
-        if (!bms_equal(jnode->inner_child->relids, jpath->innerjoinpath->parent->relids))
-            return;
-        if (!bms_equal(jnode->outer_child->relids, jpath->outerjoinpath->parent->relids))
-            return;
     }
 
-    if (!IsAScanPath(new_path) && !IsAJoinPath(new_path))
+    /*
+     * At this point we know that our path is either a join path or a scan path.
+     * To check its validity, we first check the associated operator.
+     * Then, we check if the path is on the hinted join order.
+     * Finally, for join paths we also need to recurse into the child paths.
+     */
+
+    if  (!path_satisfies_operator(path, join_order))
+        return false;
+
+    if (!join_order)
     {
-        (*handler)(parent_rel, new_path);
-        return;
+        if (IsAJoinPath(path))
+        {
+            jpath = (JoinPath *) path;
+
+            /*
+             * We cannot use the shortcut logic here, because we still need to check for parallelism in both paths!
+             */
+
+            inner_valid = path_satisfies_hints(jpath->innerjoinpath, NULL, gather_child);
+            outer_valid = path_satisfies_hints(jpath->outerjoinpath, NULL, gather_child);
+            return inner_valid && outer_valid;
+        }
+        else if (IsAScanPath(path))
+            return true;
     }
 
-    if (IsAJoinPath(new_path))
-    {
-        JoinPath *jpath = (JoinPath*) new_path;
-        if (!correct_memoize_materialize_usage(jpath, jpath->innerjoinpath))
-            return;
-    }
+    if (!bms_equal(path->parent->relids, join_order->relids))
+        return false;
 
-    hint_entry = (OperatorHashEntry*) hash_search(current_hints->operator_hints, &(parent_rel->relids), HASH_FIND, &hint_found);
-    if (!hint_found)
-    {
-        (*handler)(parent_rel, new_path);
-        return;
-    }
+    if (IsAScanPath(path))
+        return true;
 
-    if (hint_entry->op == SEQSCAN && !PathIsA(new_path, SeqScan))
-        reject_path = true;
-    else if (hint_entry->op == IDXSCAN && !PathIsA(new_path, IndexScan) && !PathIsA(new_path, BitmapHeapScan))
-        reject_path = true;
-    else if (hint_entry->op == NESTLOOP && !PathIsA(new_path, NestLoop))
-        reject_path = true;
-    else if (hint_entry->op == MERGEJOIN && !PathIsA(new_path, MergeJoin))
-        reject_path = true;
-    else if (hint_entry->op == HASHJOIN && !PathIsA(new_path, HashJoin))
-        reject_path = true;
+    /*
+     * At this point we know for certain that this must be a join path
+     */
+    Assert(IsAJoinPath(path));
+    jpath = (JoinPath*) path;
+    inner_valid = path_satisfies_hints(jpath->innerjoinpath, join_order->inner_child, gather_child);
+    outer_valid = path_satisfies_hints(jpath->outerjoinpath, join_order->outer_child, gather_child);
+    return inner_valid && outer_valid;
+}
 
-    if (!reject_path)
-        (*handler)(parent_rel, new_path);
+
+static bool
+upper_rel_satisfies_parallelization(RelOptInfo *parent_rel, Path *gather_root)
+{
+    Query *query;
+    bool   passed;
+    bool   requires_post_join;
+
+    query = current_planner_root->parse;
+    requires_post_join = query->hasAggs ||
+                         query->groupClause ||
+                         query->groupingSets ||
+                         current_planner_root->hasHavingQual ||
+                         query->hasWindowFuncs ||
+                         query->sortClause ||
+                         query->distinctClause ||
+                         query->setOperations;
+
+    if (requires_post_join)
+        passed = !IsAJoinPath(gather_root) &&
+                 !IsAScanPath(gather_root) &&
+                  bms_equal(current_hints->parallel_rels, parent_rel->relids);
+    else
+        passed = bms_equal(current_hints->parallel_rels, parent_rel->relids);
+
+    return passed;
 }
 
 extern "C" void
 hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
 {
-    add_path_handler(standard_add_path, parent_rel, new_path);
+    Path        *gather_root;
+    JoinOrder   *join_order;
+    bool         contains_par_subplan;
+    bool         keep_new = true;
+
+    /*
+     * Our add_path() implementation operates in two stages:
+     * 1. Initially, we check whether the given path satisfies our hints for join order and physical operators.
+     * 2. Afterwards, we check whether its usage (or non-usage) of parallelization is also correct.
+     */
+
+    if (!current_hints || !current_hints->contains_hint)
+    {
+        if (prev_add_path_hook)
+            (*prev_add_path_hook)(parent_rel, new_path);
+        else
+            standard_add_path(parent_rel, new_path);
+        return;
+    }
+
+    join_order = current_hints->join_order_hint != NULL
+                 ? traverse_join_order(current_hints->join_order_hint, parent_rel->relids)
+                 : NULL;
+
+    gather_root = NULL;
+    if (!path_satisfies_hints(new_path, join_order, &gather_root))
+        return;
+
+    contains_par_subplan = gather_root != NULL;
+
+    if (current_hints->parallel_mode == PARMODE_SEQUENTIAL && contains_par_subplan)
+    {
+        /*
+         * We are hinted to only produce sequential paths, but we are currently dealing with a parallel path.
+         * It is safe to reject it.
+         *
+         * Notice that this branch should never be reached, because we should have already rejected the partial path.
+         * Therefore we issue a warning to investigate this further.
+         */
+        ereport(WARNING,
+                errmsg("[pg_lab] Reached presumably dead code path in add_path()"),
+                errdetail("Parallel mode is set to sequential, but parallel subplan was detected."));
+        return;
+    }
+
+    if (current_hints->parallel_mode == PARMODE_SEQUENTIAL || current_hints->parallel_mode == PARMODE_DEFAULT)
+    {
+        if (prev_add_path_hook)
+            (*prev_add_path_hook)(parent_rel, new_path);
+        else
+            standard_add_path(parent_rel, new_path);
+        return;
+    }
+
+    Assert(current_hints->parallel_mode == PARMODE_PARALLEL);
+
+    if (IS_UPPER_REL(parent_rel) && parent_rel->pathlist == NIL)
+    {
+        /*
+         * TODO
+         */
+
+        if (prev_add_path_hook)
+            (*prev_add_path_hook)(parent_rel, new_path);
+        else
+            standard_add_path(parent_rel, new_path);
+
+        return;
+    }
+
+    if (gather_root)
+    {
+        /*
+         * We are tasked with only producing parallel paths and we found a parallelized path.
+         * Now, we just need to make sure that this is path is parallelized correctly.
+         */
+
+        if (current_hints->parallelize_entire_plan)
+        {
+            keep_new = upper_rel_satisfies_parallelization(parent_rel, gather_root);
+        }
+        else if (current_hints->parallel_rels == NULL)
+            /*
+             * We should only produce parallel plans, but it does not matter where we start with the parallelization.
+             * Since we already know that we are currently working with a partial path, we can just accept it.
+             */
+            keep_new = true;
+        else
+        {
+            Assert(current_hints->parallel_rels != NULL);
+            keep_new = bms_equal(current_hints->parallel_rels, gather_root->parent->relids) &&
+                       (IsAJoinPath(gather_root) || IsAScanPath(gather_root));
+        }
+
+        if (keep_new)
+        {
+            ListCell *lc;
+
+            foreach (lc, parent_rel->pathlist)
+            {
+                Path *other_path = (Path *) lfirst(lc);
+                Path *other_gather;
+                bool  prune_other;
+
+                prune_other = path_satisfies_hints(other_path, join_order, &other_gather) ||
+                              other_gather == NULL ||
+                              (current_hints->parallelize_entire_plan &&
+                                !upper_rel_satisfies_parallelization(parent_rel, other_gather));
+
+                if (prune_other)
+                    parent_rel->pathlist = foreach_delete_current(parent_rel->pathlist, lc);
+            }
+        }
+    }
+    else if (list_length(parent_rel->pathlist) == 0)
+    {
+        /*
+         * TODO
+         */
+
+        keep_new = true;
+    }
+    else
+    {
+        /*
+         * TODO
+         */
+
+        keep_new = false;
+    }
+
+    if (keep_new)
+    {
+        if (prev_add_path_hook)
+            (*prev_add_path_hook)(parent_rel, new_path);
+        else
+            standard_add_path(parent_rel, new_path);
+    }
 }
 
 extern "C" void
 hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *new_path)
 {
-    add_path_handler(standard_add_partial_path, parent_rel, new_path);
+    JoinOrder *join_order;
+    bool keep_new;
+
+    if (!current_hints || !current_hints->contains_hint)
+    {
+        if (prev_add_path_hook)
+            (*prev_add_path_hook)(parent_rel, new_path);
+        else
+            standard_add_partial_path(parent_rel, new_path);
+        return;
+    }
+
+    if (current_hints->parallel_mode == PARMODE_SEQUENTIAL)
+        /*
+         * We are hinted to only produce sequential path, but are currently considering a parallel path.
+         * Reject it.
+         */
+        return;
+
+    join_order = current_hints->join_order_hint != NULL
+                 ? traverse_join_order(current_hints->join_order_hint, parent_rel->relids)
+                 : NULL;
+
+    if (!path_satisfies_hints(new_path, join_order, NULL))
+        return;
+
+    /*
+     * Whether we may or may not accept the new path depends on a lot of rather spaghetti-ish decision logic.
+     * This is not particularly pretty, but it gets the job done (at least for now).
+     *
+     * The basic idea is as follows:
+     * TODO
+     */
+
+    if (current_hints->parallel_mode == PARMODE_DEFAULT)
+    {
+        /*
+         * In default mode we can do whatever, as long as join order and physical operators are satisfied
+         * (which was already checked above).
+         */
+        if (prev_add_path_hook)
+            (*prev_add_path_hook)(parent_rel, new_path);
+        else
+            standard_add_partial_path(parent_rel, new_path);
+        return;
+    }
+
+    Assert(current_hints->parallel_mode == PARMODE_PARALLEL);
+
+    if (current_hints->parallel_rels == NULL || current_hints->parallelize_entire_plan)
+        /*
+         * TODO
+         */
+        keep_new = true;
+    else
+        /*
+         * TODO
+         */
+        keep_new = bms_is_subset(parent_rel->relids, current_hints->parallel_rels);
+
+    if (keep_new)
+    {
+        if (prev_add_path_hook)
+            (*prev_add_path_hook)(parent_rel, new_path);
+        else
+            standard_add_partial_path(parent_rel, new_path);
+    }
+}
+
+extern "C" int
+hint_aware_compute_parallel_workers(RelOptInfo *rel, double heap_pages,
+                                    double index_pages, int max_workers)
+{
+    if (!current_hints || !current_hints->contains_hint)
+    {
+        if (prev_compute_parallel_workers_hook)
+            return (*prev_compute_parallel_workers_hook)(rel, heap_pages, index_pages, max_workers);
+        else
+            return standard_compute_parallel_worker(rel, heap_pages, index_pages, max_workers);
+    }
+
+    if (current_hints->parallelize_entire_plan)
+        return current_hints->parallel_workers;
+    else if (current_hints->parallel_rels && bms_overlap(current_hints->parallel_rels, rel->relids))
+        return current_hints->parallel_workers;
+
+    if (prev_compute_parallel_workers_hook)
+        return (*prev_compute_parallel_workers_hook)(rel, heap_pages, index_pages, max_workers);
+    else
+        return standard_compute_parallel_worker(rel, heap_pages, index_pages, max_workers);
 }
 
 static double
@@ -340,14 +698,14 @@ extern "C" double
 hint_aware_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel)
 {
     bool hint_found = false;
-    CardinalityHashEntry *hint_entry;
+    CardinalityHint *hint_entry;
 
     if (prev_baserel_size_estimates_hook)
         return set_baserel_size_fallback(root, rel);
     if (!current_hints || !current_hints->contains_hint)
         return set_baserel_size_fallback(root, rel);
 
-    hint_entry = (CardinalityHashEntry*) hash_search(current_hints->cardinality_hints, &(rel->relids), HASH_FIND, &hint_found);
+    hint_entry = (CardinalityHint*) hash_search(current_hints->cardinality_hints, &(rel->relids), HASH_FIND, &hint_found);
     if (!hint_found)
         return set_baserel_size_fallback(root, rel);
 
@@ -369,29 +727,16 @@ hint_aware_joinrel_size_estimates(PlannerInfo *root, RelOptInfo *rel, RelOptInfo
                                  RelOptInfo *inner_rel, SpecialJoinInfo *sjinfo, List *restrictlist)
 {
     bool hint_found = false;
-    CardinalityHashEntry *hint_entry;
+    CardinalityHint *hint_entry;
 
     if (!current_hints || !current_hints->contains_hint)
         return set_joinrel_size_fallback(root, rel, outer_rel, inner_rel, sjinfo, restrictlist);
 
-    hint_entry = (CardinalityHashEntry*) hash_search(current_hints->cardinality_hints, &(rel->relids), HASH_FIND, &hint_found);
+    hint_entry = (CardinalityHint*) hash_search(current_hints->cardinality_hints, &(rel->relids), HASH_FIND, &hint_found);
     if (!hint_found)
         return set_joinrel_size_fallback(root, rel, outer_rel, inner_rel, sjinfo, restrictlist);
 
     return hint_entry->card;
-}
-
-extern "C" void
-hint_aware_make_one_rel_prep(PlannerInfo *root, List *joinlist)
-{
-    PlannerHints *hints = (PlannerHints*) palloc0(sizeof(PlannerHints));
-    init_hints(root, hints);
-
-    if (prev_prepare_make_one_rel_hook)
-        prev_prepare_make_one_rel_hook(root, joinlist);
-
-    current_planner_root = root;
-    current_hints = hints;
 }
 
 static Index
@@ -504,7 +849,7 @@ extern "C" void
 hint_aware_cost_seqscan(Path *path, PlannerInfo *root, RelOptInfo *baserel, ParamPathInfo *param_info)
 {
     bool hint_found = false;
-    CostHashEntry *hint_entry;
+    CostHint *hint_entry;
     Cost startup_cost, total_cost;
 
     if (prev_cost_seqscan_hook)
@@ -515,7 +860,7 @@ hint_aware_cost_seqscan(Path *path, PlannerInfo *root, RelOptInfo *baserel, Para
     if (!current_hints || !current_hints->contains_hint)
         return;
 
-    hint_entry = (CostHashEntry*) hash_search(current_hints->cost_hints, &(baserel->relids), HASH_FIND, &hint_found);
+    hint_entry = (CostHint*) hash_search(current_hints->cost_hints, &(baserel->relids), HASH_FIND, &hint_found);
     if (!hint_found)
         return;
 
@@ -532,7 +877,7 @@ extern "C" void
 hint_aware_cost_idxscan(IndexPath *path, PlannerInfo *root, double loop_count, bool partial_path)
 {
     bool hint_found = false;
-    CostHashEntry *hint_entry;
+    CostHint *hint_entry;
     Cost startup_cost, total_cost;
 
     if (prev_cost_index_hook)
@@ -543,7 +888,7 @@ hint_aware_cost_idxscan(IndexPath *path, PlannerInfo *root, double loop_count, b
     if (!current_hints || !current_hints->contains_hint)
         return;
 
-    hint_entry = (CostHashEntry*) hash_search(current_hints->cost_hints, &(path->path.parent->relids), HASH_FIND, &hint_found);
+    hint_entry = (CostHint*) hash_search(current_hints->cost_hints, &(path->path.parent->relids), HASH_FIND, &hint_found);
     if (!hint_found)
         return;
 
@@ -561,7 +906,7 @@ hint_aware_cost_bitmapscan(Path *path, PlannerInfo *root, RelOptInfo *baserel, P
                            Path *bitmapqual, double loop_count)
 {
     bool hint_found = false;
-    CostHashEntry *hint_entry;
+    CostHint *hint_entry;
     Cost startup_cost, total_cost;
 
     if (prev_cost_bitmap_heap_scan_hook)
@@ -572,7 +917,7 @@ hint_aware_cost_bitmapscan(Path *path, PlannerInfo *root, RelOptInfo *baserel, P
     if (!current_hints || !current_hints->contains_hint)
         return;
 
-    hint_entry = (CostHashEntry*) hash_search(current_hints->cost_hints, &(baserel->relids), HASH_FIND, &hint_found);
+    hint_entry = (CostHint*) hash_search(current_hints->cost_hints, &(baserel->relids), HASH_FIND, &hint_found);
     if (!hint_found)
         return;
 
@@ -593,7 +938,7 @@ hint_aware_initial_cost_nestloop(PlannerInfo *root,
 								 JoinPathExtraData *extra)
 {
     bool hint_found = false;
-    CostHashEntry *hint_entry;
+    CostHint *hint_entry;
     Relids join_relids = EMPTY_BITMAP;
     Cost startup_cost, total_cost;
 
@@ -607,7 +952,7 @@ hint_aware_initial_cost_nestloop(PlannerInfo *root,
 
     join_relids = bms_add_members(join_relids, outer_path->parent->relids);
     join_relids = bms_add_members(join_relids, inner_path->parent->relids);
-    hint_entry = (CostHashEntry*) hash_search(current_hints->cost_hints, &join_relids, HASH_FIND, &hint_found);
+    hint_entry = (CostHint*) hash_search(current_hints->cost_hints, &join_relids, HASH_FIND, &hint_found);
     if (!hint_found)
         return;
 
@@ -626,7 +971,7 @@ hint_aware_final_cost_nestloop(PlannerInfo *root, NestPath *path,
 							   JoinPathExtraData *extra)
 {
     bool hint_found = false;
-    CostHashEntry *hint_entry;
+    CostHint *hint_entry;
     Path *raw_path;
     Relids relids;
     Cost startup_cost, total_cost;
@@ -640,7 +985,7 @@ hint_aware_final_cost_nestloop(PlannerInfo *root, NestPath *path,
         return;
 
     raw_path = &(path->jpath.path);
-    hint_entry = (CostHashEntry*) hash_search(current_hints->cost_hints, &(raw_path->parent->relids), HASH_FIND, &hint_found);
+    hint_entry = (CostHint*) hash_search(current_hints->cost_hints, &(raw_path->parent->relids), HASH_FIND, &hint_found);
     if (!hint_found)
         return;
 
@@ -664,7 +1009,7 @@ hint_aware_initial_cost_hashjoin(PlannerInfo *root,
 								 bool parallel_hash)
 {
     bool hint_found = false;
-    CostHashEntry *hint_entry;
+    CostHint *hint_entry;
     Relids join_relids = EMPTY_BITMAP;
     Cost startup_cost, total_cost;
 
@@ -678,7 +1023,7 @@ hint_aware_initial_cost_hashjoin(PlannerInfo *root,
 
     join_relids = bms_add_members(join_relids, outer_path->parent->relids);
     join_relids = bms_add_members(join_relids, inner_path->parent->relids);
-    hint_entry = (CostHashEntry*) hash_search(current_hints->cost_hints, &join_relids, HASH_FIND, &hint_found);
+    hint_entry = (CostHint*) hash_search(current_hints->cost_hints, &join_relids, HASH_FIND, &hint_found);
     if (!hint_found)
         return;
 
@@ -697,7 +1042,7 @@ hint_aware_final_cost_hashjoin(PlannerInfo *root, HashPath *path,
                                JoinPathExtraData *extra)
 {
     bool hint_found = false;
-    CostHashEntry *hint_entry;
+    CostHint *hint_entry;
     Path *raw_path;
     Relids relids;
     Cost startup_cost, total_cost;
@@ -711,7 +1056,7 @@ hint_aware_final_cost_hashjoin(PlannerInfo *root, HashPath *path,
         return;
 
     raw_path = &(path->jpath.path);
-    hint_entry = (CostHashEntry*) hash_search(current_hints->cost_hints, &(raw_path->parent->relids), HASH_FIND, &hint_found);
+    hint_entry = (CostHint*) hash_search(current_hints->cost_hints, &(raw_path->parent->relids), HASH_FIND, &hint_found);
     if (!hint_found)
         return;
 
@@ -734,7 +1079,7 @@ hint_aware_intial_cost_mergejoin(PlannerInfo *root,
                                  JoinPathExtraData *extra)
 {
     bool hint_found = false;
-    CostHashEntry *hint_entry;
+    CostHint *hint_entry;
     Relids join_relids = EMPTY_BITMAP;
     Cost startup_cost, total_cost;
 
@@ -750,7 +1095,7 @@ hint_aware_intial_cost_mergejoin(PlannerInfo *root,
 
     join_relids = bms_add_members(join_relids, outer_path->parent->relids);
     join_relids = bms_add_members(join_relids, inner_path->parent->relids);
-    hint_entry = (CostHashEntry*) hash_search(current_hints->cost_hints, &join_relids, HASH_FIND, &hint_found);
+    hint_entry = (CostHint*) hash_search(current_hints->cost_hints, &join_relids, HASH_FIND, &hint_found);
     if (!hint_found)
         return;
 
@@ -769,7 +1114,7 @@ hint_aware_final_cost_mergejoin(PlannerInfo *root, MergePath *path,
                                 JoinPathExtraData *extra)
 {
     bool hint_found = false;
-    CostHashEntry *hint_entry;
+    CostHint *hint_entry;
     Path *raw_path;
     Relids relids;
     Cost startup_cost, total_cost;
@@ -783,7 +1128,7 @@ hint_aware_final_cost_mergejoin(PlannerInfo *root, MergePath *path,
         return;
 
     raw_path = &(path->jpath.path);
-    hint_entry = (CostHashEntry*) hash_search(current_hints->cost_hints, &(raw_path->parent->relids), HASH_FIND, &hint_found);
+    hint_entry = (CostHint*) hash_search(current_hints->cost_hints, &(raw_path->parent->relids), HASH_FIND, &hint_found);
     if (!hint_found)
         return;
 
@@ -799,6 +1144,12 @@ hint_aware_final_cost_mergejoin(PlannerInfo *root, MergePath *path,
 extern "C" void
 _PG_init(void)
 {
+    DefineCustomBoolVariable("enable_pglab",
+                             "Enable plan hinting via pg_lab", NULL,
+                             &enable_pglab, true,
+                             PGC_USERSET, 0,
+                             NULL, NULL, NULL);
+
     prev_planner_hook = planner_hook;
     planner_hook = hint_aware_planner;
 
@@ -825,6 +1176,9 @@ _PG_init(void)
 
     prev_joinrel_size_estimates_hook = set_joinrel_size_estimates_hook;
     set_joinrel_size_estimates_hook = hint_aware_joinrel_size_estimates;
+
+    prev_compute_parallel_workers_hook = compute_parallel_worker_hook;
+    compute_parallel_worker_hook = hint_aware_compute_parallel_workers;
 
     prev_cost_seqscan_hook = cost_seqscan_hook;
     cost_seqscan_hook = hint_aware_cost_seqscan;
@@ -862,4 +1216,5 @@ _PG_fini(void)
     set_join_pathlist_hook = prev_join_pathlist_hook;
     set_baserel_size_estimates_hook = prev_baserel_size_estimates_hook;
     set_joinrel_size_estimates_hook = prev_joinrel_size_estimates_hook;
+    compute_parallel_worker_hook = prev_compute_parallel_workers_hook;
 }

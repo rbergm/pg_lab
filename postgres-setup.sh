@@ -165,7 +165,13 @@ make -j $MAKE_CORES && make install
 echo ".. Installing pg_lab extension"
 PGLAB_DIR=$WD/extensions/pg_lab
 mkdir -p $PGLAB_DIR/build && cd $PGLAB_DIR/build
-PG_INSTALL_DIR="$PG_TARGET_DIR" cmake ..
+
+if [ "$DEBUG_BUILD" = "true" ] ; then
+    cmake -DCMAKE_BUILD_TYPE=Debug -DPG_INSTALL_DIR="$PG_TARGET_DIR" ..
+else
+    cmake -DCMAKE_BUILD_TYPE=Release -DPG_INSTALL_DIR="$PG_TARGET_DIR" ..
+fi
+
 make -j $MAKE_CORES
 
 
