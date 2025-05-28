@@ -166,10 +166,6 @@ echo ".. Installing pg_lab extension"
 PGLAB_DIR=$WD/extensions/pg_lab
 mkdir -p $PGLAB_DIR/build && cd $PGLAB_DIR/build
 
-echo ".. Installing pg_temperature extension"
-cd $WD/extensions/pg_temperature
-make && make install
-
 if [ "$DEBUG_BUILD" = "true" ] ; then
     cmake -DCMAKE_BUILD_TYPE=Debug -DPG_INSTALL_DIR="$PG_TARGET_DIR" ..
 else
@@ -178,6 +174,9 @@ fi
 
 make -j $MAKE_CORES
 
+echo ".. Installing pg_temperature extension"
+cd $WD/extensions/pg_temperature
+make && make install
 
 echo ".. Initializing Postgres Server environment"
 cd $PG_TARGET_DIR
