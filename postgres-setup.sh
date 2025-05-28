@@ -166,6 +166,10 @@ echo ".. Installing pg_lab extension"
 PGLAB_DIR=$WD/extensions/pg_lab
 mkdir -p $PGLAB_DIR/build && cd $PGLAB_DIR/build
 
+echo ".. Installing pg_temperature extension"
+cd $WD/extensions/pg_temperature
+make && make install
+
 if [ "$DEBUG_BUILD" = "true" ] ; then
     cmake -DCMAKE_BUILD_TYPE=Debug -DPG_INSTALL_DIR="$PG_TARGET_DIR" ..
 else
@@ -192,7 +196,7 @@ else
     fi
 
     echo "... Adding pg_buffercache, pg_lab and pg_prewarm to preload libraries"
-    sed_wrapper "s/#\{0,1\}shared_preload_libraries.*/shared_preload_libraries = 'pg_buffercache,pg_lab,pg_prewarm'/" $PGDATA/postgresql.conf
+    sed_wrapper "s/#\{0,1\}shared_preload_libraries.*/shared_preload_libraries = 'pg_buffercache,pg_prewarm,pg_temperature,pg_lab'/" $PGDATA/postgresql.conf
     echo "pg_prewarm.autoprewarm = false" >>  $PGDATA/postgresql.conf
 
     echo "... Starting Postgres (log file is $PGDATA/pg.log)"
