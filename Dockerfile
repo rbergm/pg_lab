@@ -6,14 +6,15 @@ EXPOSE 5432
 RUN apt update && apt install -y \
         build-essential sudo locales tzdata procps lsof \
         bison flex curl pkg-config cmake llvm clang \
-        libicu-dev libreadline-dev libssl-dev liblz4-dev libossp-uuid-dev libzstd-dev \
+        libicu-dev libreadline-dev libssl-dev liblz4-dev libossp-uuid-dev libzstd-dev zlib1g-dev \
+        python3 python3-venv python3-pip \
         git vim unzip zstd default-jre tmux ; \
     locale-gen en_US.UTF-8 && \
     update-locale LANG=en_US.UTF-8
 
 
 # Configure some general settings
-ARG USERNAME=postgres
+ARG USERNAME=lab
 ENV USERNAME=$USERNAME
 ENV USER=$USERNAME
 
@@ -36,11 +37,11 @@ RUN useradd -ms /bin/bash $USERNAME ; \
     usermod -aG sudo $USERNAME
 USER $USERNAME
 
-RUN git clone --depth 1 --branch=main https://github.com/rbergm/pg_lab /pg_lab ; \
+RUN git clone --depth 1 --branch=feature/parallel-hints https://github.com/rbergm/pg_lab /pg_lab ; \
     if [ "$DEBUG" = "true" ]; then \
         ./postgres-setup.sh --stop --pg-ver ${PGVER} --debug ; \
     else \
         ./postgres-setup.sh --stop --pg-ver ${PGVER} ; \
     fi
 
-CMD ["/pg_lab/tools/docker-entrypoints.sh"]
+CMD ["/pg_lab/tools/docker-entrypoint.sh"]
