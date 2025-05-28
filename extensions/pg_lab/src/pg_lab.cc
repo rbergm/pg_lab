@@ -139,10 +139,24 @@ static bool enable_pglab = true;
 /* Stores the raw query that is currently being optimized in this backend. */
 char *current_query_string = NULL;
 
-static PlannerInfo *current_planner_root = NULL;
+/*
+ * We explicitly store the PlannerInfo as a static variable because some low-level routines in the planner do not receive it
+ * as an argument. But, some of our hint-aware variants of these routines need it.
+ */
+static PlannerInfo  *current_planner_root = NULL;
+
+/* The hints that are available for the current query. */
 static PlannerHints *current_hints = NULL;
 
 
+/*
+ * Our custom planner hook is required because this is the last point during the Postgres planning phase where the raw query
+ * string is available. Everywhere down the line, only the parsed Query* node is available. However, the Query* does not
+ * contain any comments and hence, no hints.
+ *
+ * Sadly, in the planner entry point the PlannerInfo is not yet available, so we can only export the raw query string and
+ * need to delegate the actual parsing of the hints to the pg_lab-specific make_one_rel_prep() hook.
+ */
 extern "C" PlannedStmt *
 hint_aware_planner(Query* parse, const char* query_string, int cursorOptions, ParamListInfo boundParams)
 {
@@ -163,6 +177,7 @@ hint_aware_planner(Query* parse, const char* query_string, int cursorOptions, Pa
         result = standard_planner(parse, query_string, cursorOptions, boundParams);
     }
 
+    /* we let the context-based memory manager of PG take care of properly freeing our stuff */
     current_hints        = NULL;
     current_planner_root = NULL;
     current_query_string = NULL;
@@ -170,6 +185,10 @@ hint_aware_planner(Query* parse, const char* query_string, int cursorOptions, Pa
     return result;
 }
 
+/*
+ * The make_one_rel_prep() hook is called before the actual planning starts. We use it to extract the hints from our raw
+ * query string.
+ */
 extern "C" void
 hint_aware_make_one_rel_prep(PlannerInfo *root, List *joinlist)
 {
@@ -192,6 +211,11 @@ hint_aware_make_one_rel_prep(PlannerInfo *root, List *joinlist)
     current_hints = hints;
 }
 
+/*
+ * We need a custom hook for the add_path_precheck(), because the original function is used to skip access paths if they are
+ * definitely not useful (at least according to the native cost model). We need to overwrite this behavior to enforce our
+ * current hints.
+ */
 extern "C" bool
 hint_aware_add_path_precheck(RelOptInfo *parent_rel, Cost startup_cost, Cost total_cost,
                              List *pathkeys, Relids required_outer)
@@ -206,6 +230,11 @@ hint_aware_add_path_precheck(RelOptInfo *parent_rel, Cost startup_cost, Cost tot
         return standard_add_path_precheck(parent_rel, startup_cost, total_cost, pathkeys, required_outer);
 }
 
+/*
+ * We need a custom hook for the add_partial_path_precheck(), because the original function is used to skip access paths if
+ * they are definitely not useful (at least according to the native cost model). We need to overwrite this behavior to enforce
+ * our current hints.
+ */
 extern "C" bool
 hint_aware_add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost, List *pathkeys)
 {
@@ -220,8 +249,6 @@ hint_aware_add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost, Li
 }
 
 
-typedef void (*add_path_handler_type) (RelOptInfo *parent_rel, Path *new_path);
-
 /* utility macros inspired by nodeTag and IsA from nodes.h */
 #define pathTag(pathptr) (((const Path*)pathptr)->pathtype)
 #define PathIsA(nodeptr,_type_) (pathTag(nodeptr) == T_ ## _type_)
@@ -234,6 +261,15 @@ typedef void (*add_path_handler_type) (RelOptInfo *parent_rel, Path *new_path);
 #define IsAParPath(pathptr) (PathIsA(pathptr, Gather) || PathIsA(pathptr, GatherMerge))
 
 
+/*
+ * Checks, whether the given path has the operator that is required by the current hints.
+ *
+ * We pass the join_order, because it can serve as a shortcut to the OperatorHint. This is cheaper than performing a hash
+ * lookup in the hint table.
+ *
+ * Notice that we don't recurse into subpaths for joins or intermediate ops (memoize/materialize) here, we just make sure that
+ * the top-level operator is correct. However, we do recurse into upper-rel related paths (gather, limit, etc).
+ */
 static bool
 path_satisfies_operator(Path *path, JoinOrder *join_order)
 {
@@ -243,17 +279,23 @@ path_satisfies_operator(Path *path, JoinOrder *join_order)
 
     if (!IsAJoinPath(path) && !IsAScanPath(path) && !IsAIntermediatePath(path))
     {
-        /* Could be a gather/gather merge path. We don't force these, so we leave the path be */
+        /*
+         * Could be a gather/gather merge path or a path belonging to the upper rel.
+         * We don't force these, so we leave the path be.
+         */
         return true;
     }
 
+    hint_found = false;
     if (join_order)
     {
         op_hint = join_order->physical_op;
         hint_found = op_hint != NULL;
     }
-    else
+
+    if (!hint_found)
     {
+        /* We use the slightly bogus control flow to fall back to the hint table in case the join order did not do its job. */
         relids = path->parent->relids;
         op_hint = (OperatorHint*) hash_search(current_hints->operator_hints,
                                               &relids, HASH_FIND, &hint_found);
@@ -263,11 +305,16 @@ path_satisfies_operator(Path *path, JoinOrder *join_order)
         /* Nothing restricts the choice of operators, we are good to continue */
         return true;
 
+    /*
+     * Materialization and memoization is handled by flags attached to the main operator hint. Therefore, we need to handle
+     * them separately.
+     * Afterwards, we simply switch over the hinted operator and make sure that our path is of the correct type.
+     */
+
     if (PathIsA(path, Memoize))
         return op_hint->memoize_output;
     else if (PathIsA(path, Material))
         return op_hint->materialize_output;
-
 
     switch (op_hint->op)
     {
@@ -293,13 +340,31 @@ path_satisfies_operator(Path *path, JoinOrder *join_order)
 }
 
 
+/*
+ * Checks, whether the given path satisfies all our hints with regards to the assigned operators and the join order.
+ *
+ * The join order has to be rooted at our current path. If no join order is given, NULL can be passed. Otherwise, a NULL value
+ * implies that the path does not satisfy the join order and hence fails the check.
+ *
+ * If we detect a parallel subpath, we store it in the par_subpath, because the caller might find this information useful to
+ * decide whether the parallelization hints are satisfied. This portion of the hints check is explicitly not handled in this
+ * function, because it requires more context (e.g. to distinguish between partial and normal paths).
+ * If the caller does not care about the parallel subpath, they can pass a NULL pointer.
+ */
 static bool
-path_satisfies_hints(Path *path, JoinOrder *join_order, Path **gather_child)
+path_satisfies_hints(Path *path, JoinOrder *join_node, Path **par_subpath)
 {
     JoinPath *jpath;
     bool inner_valid, outer_valid;
 
-    /* This recurses, so we need to be as paranoid as the normal optimizer implementation */
+    if (current_hints->join_order_hint && !join_node)
+        /* We have a join order, but the path is not on it. This is easy, we can reject the path. */
+        return false;
+
+    /*
+     * Now the easy checks are over and we need to do some actual work.
+     * This involves recursion, so we should be as paranoid as the normal planner implementation.
+     */
     check_stack_depth();
 
     /*
@@ -312,61 +377,61 @@ path_satisfies_hints(Path *path, JoinOrder *join_order, Path **gather_child)
             case T_Gather:
             {
                 GatherPath *gpath = (GatherPath*) path;
-                if (gather_child != NULL)
-                    *gather_child = gpath->subpath;
-                return path_satisfies_hints(gpath->subpath, join_order, gather_child);
+                if (par_subpath != NULL)
+                    *par_subpath = gpath->subpath;
+                return path_satisfies_hints(gpath->subpath, join_node, par_subpath);
             }
 
             case T_GatherMerge:
             {
                 GatherMergePath *gmpath = (GatherMergePath*) path;
-                if (gather_child != NULL)
-                    *gather_child = gmpath->subpath;
-                return path_satisfies_hints(gmpath->subpath, join_order, gather_child);
+                if (par_subpath != NULL)
+                    *par_subpath = gmpath->subpath;
+                return path_satisfies_hints(gmpath->subpath, join_node, par_subpath);
             }
 
             case T_Memoize:
             {
                 MemoizePath *mempath = (MemoizePath*) path;
-                return path_satisfies_operator(path, join_order) &&
-                       path_satisfies_hints(mempath->subpath, join_order, gather_child);
+                return path_satisfies_operator(path, join_node) &&
+                       path_satisfies_hints(mempath->subpath, join_node, par_subpath);
             }
 
             case T_Material:
             {
                 MaterialPath *matpath = (MaterialPath*) path;
-                return path_satisfies_operator(path, join_order) &&
-                       path_satisfies_hints(matpath->subpath, join_order, gather_child);
+                return path_satisfies_operator(path, join_node) &&
+                       path_satisfies_hints(matpath->subpath, join_node, par_subpath);
             }
 
             case T_Sort:
             {
                 SortPath *spath = (SortPath*) path;
-                return path_satisfies_hints(spath->subpath, join_order, gather_child);
+                return path_satisfies_hints(spath->subpath, join_node, par_subpath);
             }
 
             case T_IncrementalSort:
             {
                 IncrementalSortPath *ispath = (IncrementalSortPath*) path;
-                return path_satisfies_hints((ispath->spath).subpath, join_order, gather_child);
+                return path_satisfies_hints((ispath->spath).subpath, join_node, par_subpath);
             }
 
             case T_Group:
             {
                 GroupPath *gpath = (GroupPath*) path;
-                return path_satisfies_hints(gpath->subpath, join_order, gather_child);
+                return path_satisfies_hints(gpath->subpath, join_node, par_subpath);
             }
 
             case T_Agg:
             {
                 AggPath *apath = (AggPath*) path;
-                return path_satisfies_hints(apath->subpath, join_order, gather_child);
+                return path_satisfies_hints(apath->subpath, join_node, par_subpath);
             }
 
             case T_Limit:
             {
                 LimitPath *lpath = (LimitPath*) path;
-                return path_satisfies_hints(lpath->subpath, join_order, gather_child);
+                return path_satisfies_hints(lpath->subpath, join_node, par_subpath);
             }
 
             default:
@@ -377,51 +442,81 @@ path_satisfies_hints(Path *path, JoinOrder *join_order, Path **gather_child)
 
     /*
      * At this point we know that our path is either a join path or a scan path.
-     * To check its validity, we first check the associated operator.
+     * To check its validity, we first check the associated operator (because this check is usually cheaper).
      * Then, we check if the path is on the hinted join order.
      * Finally, for join paths we also need to recurse into the child paths.
      */
 
-    if  (!path_satisfies_operator(path, join_order))
+    if  (!path_satisfies_operator(path, join_node))
         return false;
 
-    if (!join_order)
+    if (!join_node)
     {
+        /*
+         * When we don't have a join order to enforce, we just need to recurse into the child nodes to make sure they use the
+         * correct operators.
+         */
+
         if (IsAJoinPath(path))
         {
             jpath = (JoinPath *) path;
 
             /*
              * We cannot use the shortcut logic here, because we still need to check for parallelism in both paths!
+             *
+             * Even though it might reasonable to assume that a parallel path is of no use if it violates the hinted operators
+             * (and right now this is indeed the case), using the shortcut logic here might lead to very subtle bugs in the
+             * future. For example, we might be interested in the parallel subpath regardless of the operator hint
+             * compatibility at some point and for whatever reason.
              */
 
-            inner_valid = path_satisfies_hints(jpath->innerjoinpath, NULL, gather_child);
-            outer_valid = path_satisfies_hints(jpath->outerjoinpath, NULL, gather_child);
+            inner_valid = path_satisfies_hints(jpath->innerjoinpath, NULL, par_subpath);
+            outer_valid = path_satisfies_hints(jpath->outerjoinpath, NULL, par_subpath);
             return inner_valid && outer_valid;
         }
         else if (IsAScanPath(path))
             return true;
     }
 
-    if (!bms_equal(path->parent->relids, join_order->relids))
+    if (!bms_equal(path->parent->relids, join_node->relids))
+        /* Make sure that we satisfy the join order */
         return false;
 
     if (IsAScanPath(path))
+        /*
+         * Scan paths can't recurse further, except for bitmap scans.
+         * And we currently don't care about their specific structure.
+         */
         return true;
 
     /*
-     * At this point we know for certain that this must be a join path
+     * At this point we know for certain that this must be a join path and we know that the intermediate is indeed on our
+     * hinted join order. Now, we just need to make sure that this is also the case for our child paths.
      */
     Assert(IsAJoinPath(path));
+
     jpath = (JoinPath*) path;
-    inner_valid = path_satisfies_hints(jpath->innerjoinpath, join_order->inner_child, gather_child);
-    outer_valid = path_satisfies_hints(jpath->outerjoinpath, join_order->outer_child, gather_child);
+
+    /* Once again we should not use the shortcut syntax here, see comment above. */
+    inner_valid = path_satisfies_hints(jpath->innerjoinpath, join_node->inner_child, par_subpath);
+    outer_valid = path_satisfies_hints(jpath->outerjoinpath, join_node->outer_child, par_subpath);
     return inner_valid && outer_valid;
 }
 
 
+/*
+ * For parallel Result() hints, checks whether the given path satisfies is compatible with the parallelization hints.
+ *
+ * In order for this condition to be satisfied, the path must be part of the upper rel if the current query requires an upper
+ * rel and it must perform upper rel-specific operations (e.g. sorting, grouping, etc).
+ *
+ * If the current query does not require an upper rel, the path can do whatever operations it wants.
+ *
+ * par_subpath is the part of the plan that immediately follows the gather node, i.e. the subpath that is executed in parallel.
+ * It might not be NULL.
+ */
 static bool
-upper_rel_satisfies_parallelization(RelOptInfo *parent_rel, Path *gather_root)
+upper_rel_satisfies_parallelization(RelOptInfo *parent_rel, Path *par_subpath)
 {
     Query *query;
     bool   passed;
@@ -438,8 +533,8 @@ upper_rel_satisfies_parallelization(RelOptInfo *parent_rel, Path *gather_root)
                          query->setOperations;
 
     if (requires_post_join)
-        passed = !IsAJoinPath(gather_root) &&
-                 !IsAScanPath(gather_root) &&
+        passed = !IsAJoinPath(par_subpath) &&
+                 !IsAScanPath(par_subpath) &&
                   bms_equal(current_hints->parallel_rels, parent_rel->relids);
     else
         passed = bms_equal(current_hints->parallel_rels, parent_rel->relids);
@@ -447,19 +542,22 @@ upper_rel_satisfies_parallelization(RelOptInfo *parent_rel, Path *gather_root)
     return passed;
 }
 
+/*
+ * The magic sauce that makes pg_lab's hinting work.
+ *
+ * Conceptually, this hook's job is quite straightforward: whenever Postgres generates a new path, we check whether it
+ * satisfies the given hints. If it does, we let it through to the standard add_path() function. Otherwise, we exit.
+ *
+ * However, there are many subtleties that we need to take care of, especially with regards to parallel plans. These issues
+ * along with our solutions are described directly in the code below.
+ */
 extern "C" void
 hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
 {
-    Path        *gather_root;
+    Path        *par_subpath;
     JoinOrder   *join_order;
     bool         contains_par_subplan;
     bool         keep_new = true;
-
-    /*
-     * Our add_path() implementation operates in two stages:
-     * 1. Initially, we check whether the given path satisfies our hints for join order and physical operators.
-     * 2. Afterwards, we check whether its usage (or non-usage) of parallelization is also correct.
-     */
 
     if (!current_hints || !current_hints->contains_hint)
     {
@@ -470,15 +568,38 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
         return;
     }
 
+    /* We first check for structural compatibility with our hints. */
+
     join_order = current_hints->join_order_hint != NULL
                  ? traverse_join_order(current_hints->join_order_hint, parent_rel->relids)
                  : NULL;
 
-    gather_root = NULL;
-    if (!path_satisfies_hints(new_path, join_order, &gather_root))
+    par_subpath = NULL;
+    if (!path_satisfies_hints(new_path, join_order, &par_subpath))
         return;
 
-    contains_par_subplan = gather_root != NULL;
+    /*
+     * At this point we know that the new path at least satisfies the hints regarding join, scan and intermediate operators.
+     * It is also on the hinted join order.
+     *
+     * Now, we just need to make sure that the path is also compatible with our parallelization hints. However, this turns out
+     * to be much more complicated than it seems at first glance.
+     *
+     * This is mostly due to the fact that there are a lot of different cases that we need to handle. add_path() is called for
+     * both strictly sequential paths and parallel paths that have been gathered. Furthermore, it handles paths during the
+     * join phase as well as for the upper rel. But the logical flow between these two phases is reversed: whereas gather paths
+     * are only consider after their sequential counterparts during the join phase, the upper rel first considers gathering
+     * the partial paths and afterwards sequential ones.
+     *
+     * This is bad, because at the end of each of the sub-phases, set_cheapest() is called. But set_cheapest() fails the entire
+     * query if there are no paths. We encounter this case frequently when using parallel hints.
+     * The solution is the spaghetti-ish control flow logic below.
+     * We try our best to explain each of the branches, but it is still quite convoluted.
+     *
+     * Query optimization is just complicated, man.
+     */
+
+    contains_par_subplan = par_subpath != NULL;
 
     if (current_hints->parallel_mode == PARMODE_SEQUENTIAL && contains_par_subplan)
     {
@@ -488,6 +609,8 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
          *
          * Notice that this branch should never be reached, because we should have already rejected the partial path.
          * Therefore we issue a warning to investigate this further.
+         *
+         * TODO: test sequential mode with upper rel queries. This should not work right now?
          */
         ereport(WARNING,
                 errmsg("[pg_lab] Reached presumably dead code path in add_path()"),
@@ -520,7 +643,7 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
         return;
     }
 
-    if (gather_root)
+    if (par_subpath)
     {
         /*
          * We are tasked with only producing parallel paths and we found a parallelized path.
@@ -529,7 +652,7 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
 
         if (current_hints->parallelize_entire_plan)
         {
-            keep_new = upper_rel_satisfies_parallelization(parent_rel, gather_root);
+            keep_new = upper_rel_satisfies_parallelization(parent_rel, par_subpath);
         }
         else if (current_hints->parallel_rels == NULL)
             /*
@@ -540,8 +663,8 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
         else
         {
             Assert(current_hints->parallel_rels != NULL);
-            keep_new = bms_equal(current_hints->parallel_rels, gather_root->parent->relids) &&
-                       (IsAJoinPath(gather_root) || IsAScanPath(gather_root));
+            keep_new = bms_equal(current_hints->parallel_rels, par_subpath->parent->relids) &&
+                       (IsAJoinPath(par_subpath) || IsAScanPath(par_subpath));
         }
 
         if (keep_new)
