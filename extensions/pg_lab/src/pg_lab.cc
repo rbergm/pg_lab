@@ -32,9 +32,6 @@ void destroyStringInfo(StringInfo str) {
 #endif
 }
 
-/* The parser is our C++ interface -- hence no extern "C" */
-#include "hint_parser.h"
-
 extern "C" {
     PG_MODULE_MAGIC;
 
@@ -201,8 +198,9 @@ hint_aware_make_one_rel_prep(PlannerInfo *root, List *joinlist)
         return;
     }
 
-    hints = (PlannerHints*) palloc0(sizeof(PlannerHints));
-    init_hints(root, hints);
+    hints = init_hints(current_query_string);
+    parse_hint_block(root, hints);
+    post_process_hint_block(hints);
 
     if (prev_prepare_make_one_rel_hook)
         prev_prepare_make_one_rel_hook(root, joinlist);
@@ -293,7 +291,7 @@ path_satisfies_operator(Path *path, JoinOrder *join_order)
         hint_found = op_hint != NULL;
     }
 
-    if (!hint_found)
+    if (!hint_found && current_hints->operator_hints)
     {
         /* We use the slightly bogus control flow to fall back to the hint table in case the join order did not do its job. */
         relids = path->parent->relids;
@@ -823,9 +821,7 @@ hint_aware_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel)
     bool hint_found = false;
     CardinalityHint *hint_entry;
 
-    if (prev_baserel_size_estimates_hook)
-        return set_baserel_size_fallback(root, rel);
-    if (!current_hints || !current_hints->contains_hint)
+    if (!current_hints || !current_hints->cardinality_hints)
         return set_baserel_size_fallback(root, rel);
 
     hint_entry = (CardinalityHint*) hash_search(current_hints->cardinality_hints, &(rel->relids), HASH_FIND, &hint_found);
@@ -852,7 +848,7 @@ hint_aware_joinrel_size_estimates(PlannerInfo *root, RelOptInfo *rel, RelOptInfo
     bool hint_found = false;
     CardinalityHint *hint_entry;
 
-    if (!current_hints || !current_hints->contains_hint)
+    if (!current_hints || !current_hints->cardinality_hints)
         return set_joinrel_size_fallback(root, rel, outer_rel, inner_rel, sjinfo, restrictlist);
 
     hint_entry = (CardinalityHint*) hash_search(current_hints->cardinality_hints, &(rel->relids), HASH_FIND, &hint_found);
@@ -888,7 +884,6 @@ forced_geqo(PlannerInfo *root, int levels_needed, List *initial_rels)
     int gene_idx;
     Gene *forced_tour;
     GeqoPrivateData priv;
-    ListCell *lc;
 
     root->join_search_private = (void*) &priv;
     priv.initial_rels = initial_rels;
@@ -898,7 +893,7 @@ forced_geqo(PlannerInfo *root, int levels_needed, List *initial_rels)
     join_order_it = (JoinOrderIterator*) palloc0(sizeof(JoinOrderIterator));
 
     Assert(current_hints->join_order_hint);
-    init_join_order_iterator(join_order_it, current_hints->join_order_hint);
+    joinorder_it_init(join_order_it, current_hints->join_order_hint);
 
     gene_idx = 0;
     for (int lc_idx = nrels - 1; lc_idx >= 0; --lc_idx)
@@ -911,7 +906,7 @@ forced_geqo(PlannerInfo *root, int levels_needed, List *initial_rels)
     result = gimme_tree(root, forced_tour, nrels);
 
     pfree(forced_tour);
-    free_join_order_iterator(join_order_it);
+    joinorder_it_free(join_order_it);
     root->join_search_private = NULL;
 
     return result;
@@ -980,7 +975,7 @@ hint_aware_cost_seqscan(Path *path, PlannerInfo *root, RelOptInfo *baserel, Para
     else
         standard_cost_seqscan(path, root, baserel, param_info);
 
-    if (!current_hints || !current_hints->contains_hint)
+    if (!current_hints || !current_hints->cost_hints)
         return;
 
     hint_entry = (CostHint*) hash_search(current_hints->cost_hints, &(baserel->relids), HASH_FIND, &hint_found);
@@ -1008,7 +1003,7 @@ hint_aware_cost_idxscan(IndexPath *path, PlannerInfo *root, double loop_count, b
     else
         standard_cost_index(path, root, loop_count, partial_path);
 
-    if (!current_hints || !current_hints->contains_hint)
+    if (!current_hints || !current_hints->cost_hints)
         return;
 
     hint_entry = (CostHint*) hash_search(current_hints->cost_hints, &(path->path.parent->relids), HASH_FIND, &hint_found);
@@ -1037,7 +1032,7 @@ hint_aware_cost_bitmapscan(Path *path, PlannerInfo *root, RelOptInfo *baserel, P
     else
         standard_cost_bitmap_heap_scan(path, root, baserel, param_info, bitmapqual, loop_count);
 
-    if (!current_hints || !current_hints->contains_hint)
+    if (!current_hints || !current_hints->cost_hints)
         return;
 
     hint_entry = (CostHint*) hash_search(current_hints->cost_hints, &(baserel->relids), HASH_FIND, &hint_found);
@@ -1070,7 +1065,7 @@ hint_aware_initial_cost_nestloop(PlannerInfo *root,
     else
         standard_initial_cost_nestloop(root, workspace, jointype, outer_path, inner_path, extra);
 
-    if (!current_hints || !current_hints->contains_hint)
+    if (!current_hints || !current_hints->cost_hints)
         return;
 
     join_relids = bms_add_members(join_relids, outer_path->parent->relids);
@@ -1096,7 +1091,6 @@ hint_aware_final_cost_nestloop(PlannerInfo *root, NestPath *path,
     bool hint_found = false;
     CostHint *hint_entry;
     Path *raw_path;
-    Relids relids;
     Cost startup_cost, total_cost;
 
     if (prev_final_cost_nestloop_hook)
@@ -1104,7 +1098,7 @@ hint_aware_final_cost_nestloop(PlannerInfo *root, NestPath *path,
     else
         standard_final_cost_nestloop(root, path, workspace, extra);
 
-    if (!current_hints || !current_hints->contains_hint)
+    if (!current_hints || !current_hints->cost_hints)
         return;
 
     raw_path = &(path->jpath.path);
@@ -1141,7 +1135,7 @@ hint_aware_initial_cost_hashjoin(PlannerInfo *root,
     else
         standard_initial_cost_hashjoin(root, workspace, jointype, hashclauses, outer_path, inner_path, extra, parallel_hash);
 
-    if (!current_hints || !current_hints->contains_hint)
+    if (!current_hints || !current_hints->cost_hints)
         return;
 
     join_relids = bms_add_members(join_relids, outer_path->parent->relids);
@@ -1167,7 +1161,6 @@ hint_aware_final_cost_hashjoin(PlannerInfo *root, HashPath *path,
     bool hint_found = false;
     CostHint *hint_entry;
     Path *raw_path;
-    Relids relids;
     Cost startup_cost, total_cost;
 
     if (prev_final_cost_hashjoin_hook)
@@ -1175,7 +1168,7 @@ hint_aware_final_cost_hashjoin(PlannerInfo *root, HashPath *path,
     else
         standard_final_cost_hashjoin(root, path, workspace, extra);
 
-    if (!current_hints || !current_hints->contains_hint)
+    if (!current_hints || !current_hints->cost_hints)
         return;
 
     raw_path = &(path->jpath.path);
@@ -1213,7 +1206,7 @@ hint_aware_intial_cost_mergejoin(PlannerInfo *root,
         standard_initial_cost_mergejoin(root, workspace, jointype, mergeclauses, outer_path, inner_path,
                                         outersortkeys, innersortkeys, extra);
 
-    if (!current_hints || !current_hints->contains_hint)
+    if (!current_hints || !current_hints->cost_hints)
         return;
 
     join_relids = bms_add_members(join_relids, outer_path->parent->relids);
@@ -1239,7 +1232,6 @@ hint_aware_final_cost_mergejoin(PlannerInfo *root, MergePath *path,
     bool hint_found = false;
     CostHint *hint_entry;
     Path *raw_path;
-    Relids relids;
     Cost startup_cost, total_cost;
 
     if (prev_final_cost_mergejoin_hook)
@@ -1247,7 +1239,7 @@ hint_aware_final_cost_mergejoin(PlannerInfo *root, MergePath *path,
     else
         standard_final_cost_mergejoin(root, path, workspace, extra);
 
-    if (!current_hints || !current_hints->contains_hint)
+    if (!current_hints || !current_hints->cost_hints)
         return;
 
     raw_path = &(path->jpath.path);

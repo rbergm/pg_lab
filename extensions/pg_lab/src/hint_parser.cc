@@ -24,10 +24,7 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
 {
     public:
         explicit HintBlockListener(PlannerInfo *root, PlannerHints *hints)
-            : root_(root), hints_(hints), local_parallel_hint_(false)
-        {
-            rti_cache_ = std::unordered_map<std::string, Index>(root->simple_rel_array_size);
-        }
+            : root_(root), hints_(hints) {}
 
         void enterPlan_mode_setting(pg_lab::HintBlockParser::Plan_mode_settingContext *ctx) override
         {
@@ -41,11 +38,11 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
 
         void enterParallelization_setting(pg_lab::HintBlockParser::Parallelization_settingContext *ctx) override
         {
-            if (local_parallel_hint_)
+            if (hints_->parallel_rels || hints_->parallelize_entire_plan)
             {
                 ereport(WARNING,
                     errmsg("[pg_lab] Ignoring global parallelization setting"),
-                    errdetail("Global parallelization setting is overridden by local hint"));
+                    errdetail("Global parallelization setting is overridden by operator hints"));
                 return;
             }
 
@@ -67,20 +64,16 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
 
         void enterJoin_op_hint(pg_lab::HintBlockParser::Join_op_hintContext *ctx) override
         {
-            PhysicalOperator op = OP_UNKNOWN;
-            Relids relations    = EMPTY_BITMAP;
+            
+            List *relnames;
             for (const auto &relname : ctx->binary_rel_id()->relation_id())
-            {
-                Index rt_index = ResolveRTIndex(relname->getText());
-                relations = bms_add_member(relations, rt_index);
-            }
-
+            relnames = lappend(relnames, (void *) relname->getText().c_str());
+            
             for (const auto &relname : ctx->relation_id())
-            {
-                Index rt_index = ResolveRTIndex(relname->getText());
-                relations = bms_add_member(relations, rt_index);
-            }
-
+            relnames = lappend(relnames, (void *) relname->getText().c_str());
+            
+            
+            PhysicalOperator op = OP_UNKNOWN;
             if (ctx->NESTLOOP())
                 op = OP_NESTLOOP;
             else if (ctx->HASHJOIN())
@@ -94,15 +87,13 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
             else
                 ereport(ERROR, errmsg("[pg_lab] Unknown join operator: %s", ctx->getText().c_str()));
 
-            MakeOperatorHint(relations, op, ctx->param_list());
+            ParseOperatorHint(relnames, op, ctx->param_list());
         }
 
         void enterScan_op_hint(pg_lab::HintBlockParser::Scan_op_hintContext *ctx) override {
+            List *relnames = list_make1((void *) ctx->relation_id()->getText().c_str());
+            
             PhysicalOperator op = OP_UNKNOWN;
-            auto relname = ctx->relation_id()->getText().c_str();
-            Index rt_index = ResolveRTIndex(relname);
-            Relids baserel = (Relids) bms_make_singleton(rt_index);
-
             if (ctx->SEQSCAN())
                 op = OP_SEQSCAN;
             else if (ctx->IDXSCAN())
@@ -117,7 +108,7 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
                 ereport(ERROR, errmsg("[pg_lab] Unknown scan operator: %s", ctx->getText().c_str()));
 
 
-            MakeOperatorHint(baserel, op, ctx->param_list());
+            ParseOperatorHint(relnames, op, ctx->param_list());
         }
 
         void enterResult_hint(pg_lab::HintBlockParser::Result_hintContext *ctx) override
@@ -128,213 +119,83 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
                 return;
             }
 
-            if (local_parallel_hint_)
+            if (hints_->parallelize_entire_plan)
             {
                 ereport(WARNING,
                     errmsg("[pg_lab] Found multiple parallel hints"),
                     errdetail("Postgres normally creates only one parallel subplan. This might break the query."));
             }
 
-            local_parallel_hint_ = true;
-
-            auto parallel_hint = ctx->parallel_hint();
-            if (!parallel_hint->INT())
-            {
-                ereport(ERROR,
-                    errmsg("[pg_lab] Invalid parallel hint format: '%s'", parallel_hint->getText().c_str()));
-                return;
-            }
-            hints_->parallel_workers = std::atoi(parallel_hint->INT()->getText().c_str());
+            hints_->parallel_workers = ParseParallelWorkers(ctx->parallel_hint());
             hints_->parallelize_entire_plan = true;
             hints_->parallel_mode = PARMODE_PARALLEL;
         }
 
         void enterCardinality_hint(pg_lab::HintBlockParser::Cardinality_hintContext *ctx) override
         {
-            Relids relations = EMPTY_BITMAP;
+            List *relnames = NIL;
             for (const auto &relname : ctx->relation_id())
             {
-                Index rt_index = ResolveRTIndex(relname->getText());
-                relations = bms_add_member(relations, rt_index);
+                relnames = lappend(relnames, (void *) relname->getText().c_str());
             }
+
             Cardinality cardinality = std::atof(ctx->INT()->getText().c_str());
 
-            CardinalityHint *cardinality_hint = (CardinalityHint*) hash_search(hints_->cardinality_hints,
-                                                                               &relations, HASH_ENTER, NULL);
-            cardinality_hint->card = cardinality;
+            MakeCardHint(root_, hints_, relnames, cardinality);
         }
 
     private:
         PlannerInfo  *root_;
         PlannerHints *hints_;
 
-        std::unordered_map<std::string, Index> rti_cache_;
-        bool local_parallel_hint_ = false;
-
-        Index ResolveRTIndex(std::string relname)
+        float ParseParallelWorkers(pg_lab::HintBlockParser::Parallel_hintContext *ctx)
         {
-            auto cached = rti_cache_.find(relname);
-            if (cached != rti_cache_.end())
-                return cached->second;
-
-            RangeTblEntry *rte = nullptr;
-            bool found         = false;
-            Index relid;
-
-            for (int i = 1; i < root_->simple_rel_array_size; ++i)
+            if (!ctx->INT())
             {
-                rte = root_->simple_rte_array[i];
-                if (rte == NULL
-                    || rte->rtekind != RTE_RELATION
-                    || !rte->eref->aliasname)
-                    continue;
-
-                if (relname == rte->eref->aliasname)
-                {
-                    relid = root_->simple_rel_array[i]->relid;
-                    found = true;
-                    break;
-                }
+                ereport(ERROR, errmsg("[pg_lab] Invalid parallel hint format: '%s'", ctx->getText().c_str()));
+                return NAN;
             }
 
-            if (!found)
-            {
-                ereport(ERROR,
-                    errmsg("[pg_lab] Relation %s not found in the range table", relname.c_str()),
-                    errdetail("Perhaps it's a typo or it refers to a temporary relation (CTE, subquery, ...)?"));
-                return InvalidIndex;
-            }
-
-            rti_cache_[relname] = relid;
-            return relid;
+            return std::atof(ctx->INT()->getText().c_str());
         }
 
-        void MakeOperatorHint(Relids relations, PhysicalOperator op, pg_lab::HintBlockParser::Param_listContext *ctx)
+        void ParseOperatorHint(List *relnames, PhysicalOperator op, pg_lab::HintBlockParser::Param_listContext *ctx)
         {
-            bool hint_found;
-            OperatorHint *operator_hint = (OperatorHint*) hash_search(hints_->operator_hints,
-                                                                      &relations, HASH_ENTER, &hint_found);
+            float par_workers = NAN;
+            if (ctx && ctx->parallel_hint().size() > 0)
+            {
+                if (hints_->parallel_rels || hints_->parallelize_entire_plan)
+                {
+                    ereport(ERROR, (
+                            errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                            errmsg("[pg_lab] Found multiple parallel hints"),
+                            errdetail("Postgres only supports one parallel subplan.")));
+                }
 
-            if (!hint_found) {
-                operator_hint->op = OP_UNKNOWN;
-                operator_hint->materialize_output = false;
-                operator_hint->memoize_output = false;
+                par_workers = ParseParallelWorkers(ctx->parallel_hint().back());
             }
+
+            if (ctx && ctx->cost_hint().size() > 1)
+            {
+                auto cost_hint = ctx->cost_hint().back();
+                if (cost_hint->cost().size() != 2)
+                {
+                    ereport(ERROR, errmsg("[pg_lab] Invalid cost hint format: '%s'", cost_hint->getText().c_str()));
+                    return;
+                }
+                auto startup_cost = ParseCost(cost_hint->cost().front());
+                auto total_cost = ParseCost(cost_hint->cost().back());
+                MakeCostHint(root_, hints_, relnames, op, startup_cost, total_cost);
+                return;
+            }
+
 
             if (op == OP_MEMOIZE)
-            {
-                operator_hint->memoize_output = true;
-                return;
-            }
+                MakeIntermediateOpHint(root_, hints_, relnames, false, true, par_workers);
             else if (op == OP_MATERIALIZE)
-            {
-                operator_hint->materialize_output = true;
-                return;
-            }
+                MakeIntermediateOpHint(root_, hints_, relnames, true, false, par_workers);
             else
-                operator_hint->op = op;
-
-            if (!ctx || !ctx->parallel_hint().size())
-                return;
-            if (local_parallel_hint_)
-            {
-                ereport(ERROR,
-                    errmsg("[pg_lab] Found multiple parallel hints"),
-                    errdetail("Postgres only supports one parallel subplan."));
-            }
-
-            local_parallel_hint_ = true;
-
-            auto parallel_hints = ctx->parallel_hint();
-            if (parallel_hints.size() > 1)
-                ereport(WARNING, errmsg("[pg_lab] Multiple parallel hints found. Using the last one."));
-
-            auto parallel_hint = parallel_hints.back();
-            if (!parallel_hint->INT())
-            {
-                ereport(ERROR,
-                    errmsg("[pg_lab] Invalid parallel hint format: '%s'", parallel_hint->getText().c_str()));
-                return;
-            }
-
-            int workers = std::atoi(parallel_hint->INT()->getText().c_str());
-            operator_hint->parallel_workers = workers;
-            hints_->parallel_rels = relations;
-            hints_->parallel_mode = PARMODE_PARALLEL;
-            hints_->parallel_workers = workers;
-        }
-
-        void MakeCostHint(std::vector<pg_lab::HintBlockParser::Cost_hintContext*> ctxs, Relids relations, PhysicalOperator op)
-        {
-            CostHint *cost_hint;
-            bool      hint_found;
-            bool      is_baserel;
-
-            if (ctxs.size() > 1)
-            {
-                ereport(WARNING, errmsg("[pg_lab] Multiple cost hints found. Using the last one."));
-                return;
-            }
-            auto ctx = ctxs.back();
-
-            is_baserel = bms_singleton_member(relations);
-            cost_hint  = (CostHint *) hash_search(hints_->cost_hints, &relations, HASH_ENTER, &hint_found);
-
-            /* If we encoutered a new hint, we need to initialize its costs */
-            if (!hint_found && is_baserel)
-            {
-                cost_hint->node_type = BASE_REL;
-                cost_hint->costs.scan_cost.seqscan_startup = NAN;
-                cost_hint->costs.scan_cost.seqscan_total = NAN;
-                cost_hint->costs.scan_cost.idxscan_startup = NAN;
-                cost_hint->costs.scan_cost.idxscan_total = NAN;
-                cost_hint->costs.scan_cost.bitmap_startup = NAN;
-                cost_hint->costs.scan_cost.bitmap_total = NAN;
-            }
-            else if (!hint_found && !is_baserel)
-            {
-                cost_hint->node_type = JOIN_REL;
-                cost_hint->costs.join_cost.nestloop_startup = NAN;
-                cost_hint->costs.join_cost.nestloop_total = NAN;
-                cost_hint->costs.join_cost.hash_startup = NAN;
-                cost_hint->costs.join_cost.hash_total = NAN;
-                cost_hint->costs.join_cost.merge_startup = NAN;
-                cost_hint->costs.join_cost.merge_total = NAN;
-            }
-
-            auto startup_cost = ParseCost(ctx->cost().at(0));
-            auto total_cost   = ParseCost(ctx->cost().at(1));
-
-            switch (op)
-            {
-                case OP_SEQSCAN:
-                    cost_hint->costs.scan_cost.seqscan_startup = startup_cost;
-                    cost_hint->costs.scan_cost.seqscan_total = total_cost;
-                    break;
-                case OP_IDXSCAN:
-                    cost_hint->costs.scan_cost.idxscan_startup = startup_cost;
-                    cost_hint->costs.scan_cost.idxscan_total = total_cost;
-                    break;
-                case OP_BITMAPSCAN:
-                    cost_hint->costs.scan_cost.bitmap_startup = startup_cost;
-                    cost_hint->costs.scan_cost.bitmap_total = total_cost;
-                    break;
-                case OP_NESTLOOP:
-                    cost_hint->costs.join_cost.nestloop_startup = startup_cost;
-                    cost_hint->costs.join_cost.nestloop_total = total_cost;
-                    break;
-                case OP_HASHJOIN:
-                    cost_hint->costs.join_cost.hash_startup = startup_cost;
-                    cost_hint->costs.join_cost.hash_total = total_cost;
-                    break;
-                case OP_MERGEJOIN:
-                    cost_hint->costs.join_cost.merge_startup = startup_cost;
-                    cost_hint->costs.join_cost.merge_total = total_cost;
-                    break;
-                default:
-                    elog(ERROR, "Unknown scan operator: %d", op);
-                    break;
-            }
+                MakeOperatorHint(root_, hints_, relnames, op, par_workers);
         }
 
         Cost ParseCost(pg_lab::HintBlockParser::CostContext *ctx)
@@ -361,219 +222,45 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
 
         JoinOrder *ParseJoinOrderIntermediate(pg_lab::HintBlockParser::Intermediate_join_orderContext *ctx)
         {
-            auto entries = ctx->join_order_entry();
-            /* XXX: robustness (array accesses + don't merge nodes with overlapping relations) */
-            auto outer_child  = ParseJoinOrder(entries.at(0));
-            auto inner_child  = ParseJoinOrder(entries.at(1));
-            auto relation_bms = bms_union(outer_child->relids, inner_child->relids);
-
-            JoinOrder *join_order   = (JoinOrder*) palloc0(sizeof(JoinOrder));
-            join_order->node_type   = JOIN_REL;
-            join_order->relids      = relation_bms;
-            join_order->outer_child = outer_child;
-            join_order->inner_child = inner_child;
-
-            outer_child->parent_node = join_order;
-            inner_child->parent_node = join_order;
-
-            auto current_level = std::max(outer_child->level, inner_child->level);
-            join_order->level  = current_level + 1;
-
-            return join_order;
+            Assert(ctx->join_order_entry().size() == 2);
+            auto outer_child = ParseJoinOrder(ctx->join_order_entry().front());
+            auto inner_child = ParseJoinOrder(ctx->join_order_entry().back());
+            return MakeJoinOrderIntermediate(root_, outer_child, inner_child);
         }
 
         JoinOrder *ParseJoinOrderBase(pg_lab::HintBlockParser::Base_join_orderContext *ctx)
         {
-            auto relname            = ctx->relation_id()->getText();
-            Index rt_index          = ResolveRTIndex(relname);
-            Bitmapset *relation_bms = bms_make_singleton(rt_index);
-
-            JoinOrder *join_order       = (JoinOrder*) palloc0(sizeof(JoinOrder));
-            join_order->node_type       = BASE_REL;
-            join_order->relids          = relation_bms;
-            join_order->rt_index        = rt_index;
-            join_order->base_identifier = pstrdup(relname.c_str());
-            join_order->level           = 0;
-
-            return join_order;
+            auto relname = ctx->relation_id()->getText().c_str();
+            return MakeJoinOrderBase(root_, relname);
         }
 
 };
 
-static void
-link_join_order_operator_hints(JoinOrder *join_order, HTAB *operator_hints)
-{
-    JoinOrderIterator  iterator;
-    ListCell          *lc;
-
-    init_join_order_iterator(&iterator, join_order);
-
-    while (!iterator.done)
-    {
-        foreach(lc, iterator.current_nodes)
-        {
-            JoinOrder *current_node = (JoinOrder *) lfirst(lc);
-            bool hint_found;
-
-            OperatorHint *operator_hint = (OperatorHint *) hash_search(operator_hints, &(current_node->relids),
-                                                                       HASH_FIND, &hint_found);
-            if (!hint_found)
-                continue;
-
-            current_node->physical_op = operator_hint;
-        }
-
-        join_order_iterator_next(&iterator);
-    }
-
-    free_join_order_iterator(&iterator);
-}
-
-static void
-determine_parallel_rels(PlannerHints *hints)
-{
-    if (hints->join_order_hint)
-    {
-        /*
-         * If we have a join order, we just need to find its outer-most relation. Postgres will use the number of parallel
-         * workers from this relation to determine the degree of parallelism for the entire plan.
-         */
-
-        JoinOrder *parallel_node = traverse_join_order(hints->join_order_hint, hints->parallel_rels);
-
-        while (parallel_node->node_type != BASE_REL)
-            parallel_node = parallel_node->outer_child;
-
-        /* don't pfree() the old relids, they are also used in the operator! */
-        hints->parallel_rels = parallel_node->relids;
-    }
-    else
-    {
-        /*
-         * While walking the ANTLR syntax tree, we have already set the parallel_rels to all relations that take part in the
-         * parallel subplan. Since we don't have a join order, any one of them could become the outer-most relation in the
-         * final query plan (which is the relation that Postgres uses to determine the degree of parallelism).
-         * Therefore, we are already done here.
-         *
-         * For good measure, we issue a warning because all of the base rels will have the parallel workers annotated, which
-         * could influence the plan selection (because it influences cost estimation for the access paths).
-         */
-        ereport(WARNING, errmsg("[pg_lab] Should only set parallel workers if the join order is also specified."));
-    }
-}
-
+extern "C" {
 
 void
-init_hints(PlannerInfo *root, PlannerHints *hints)
+parse_hint_block(PlannerInfo *root, PlannerHints *hints)
 {
-    hints->raw_query     = current_query_string;
-    hints->mode          = ANCHORED;
-    hints->parallel_mode = PARMODE_DEFAULT;
-    hints->parallel_rels = NULL;
-    hints->parallelize_entire_plan = false;
-
-    if (!current_query_string)
+    std::string query_buffer = std::string(hints->raw_query);
+    auto hb_start = query_buffer.find("/*=pg_lab=");
+    auto hb_end   = query_buffer.find("*/");
+    if (hb_start == std::string::npos || hb_end == std::string::npos)
     {
         hints->contains_hint = false;
         return;
     }
 
-    std::string *query_buffer = new std::string(hints->raw_query);
+    auto hint_string = query_buffer.substr(hb_start, hb_end - hb_start + 2);
+    hints->raw_hint = (char *) pstrdup(hint_string.c_str());
 
-    auto hint_block_start = query_buffer->find("/*=pg_lab=");
-    auto hint_block_end   = query_buffer->find("*/");
-    if (hint_block_start == std::string::npos || hint_block_end == std::string::npos)
-    {
-        hints->contains_hint = false;
-        delete query_buffer;
-        return;
-    }
+    antlr4::ANTLRInputStream parser_input(hint_string);
+    pg_lab::HintBlockLexer lexer(&parser_input);
+    antlr4::CommonTokenStream tokens(&lexer);
+    pg_lab::HintBlockParser parser(&tokens);
 
-    hints->contains_hint = true;
-    auto hint_string = query_buffer->substr(hint_block_start, hint_block_end - hint_block_start + 2);
-    hints->raw_hint = (char*) pstrdup(hint_string.c_str());
-
-    /*
-     * Initialize the hash tables.
-     * We really need to create multiple separate control structures, because these might get inflated during the hash table
-     * creation.
-     */
-    HASHCTL op_hints_hctl;
-    op_hints_hctl.keysize = sizeof(Relids);
-    op_hints_hctl.entrysize = sizeof(OperatorHint);
-    op_hints_hctl.hcxt = CurrentMemoryContext;
-    op_hints_hctl.hash = bitmap_hash;
-    op_hints_hctl.match = bitmap_match;
-    hints->operator_hints = hash_create("OperatorHintHashes",
-                                        16L,
-                                        &op_hints_hctl,
-                                        HASH_ELEM | HASH_CONTEXT | HASH_FUNCTION | HASH_COMPARE);
-
-    HASHCTL card_hints_hctl;
-    card_hints_hctl.keysize = sizeof(Relids);
-    card_hints_hctl.entrysize = sizeof(CardinalityHint);
-    card_hints_hctl.hcxt = CurrentMemoryContext;
-    card_hints_hctl.hash = bitmap_hash;
-    card_hints_hctl.match = bitmap_match;
-    hints->cardinality_hints = hash_create("CardinalityHintHashes",
-                                           32L,
-                                           &card_hints_hctl,
-                                           HASH_ELEM | HASH_CONTEXT | HASH_FUNCTION | HASH_COMPARE);
-
-    HASHCTL cost_hints_hctl;
-    cost_hints_hctl.keysize = sizeof(Relids);
-    cost_hints_hctl.entrysize = sizeof(CostHint);
-    cost_hints_hctl.hcxt = CurrentMemoryContext;
-    cost_hints_hctl.hash = bitmap_hash;
-    cost_hints_hctl.match = bitmap_match;
-    hints->cost_hints = hash_create("CostHintHashes",
-                                    32L,
-                                    &cost_hints_hctl,
-                                    HASH_ELEM | HASH_CONTEXT | HASH_FUNCTION | HASH_COMPARE);
-
-    /*
-     * C++ extensions for Postgres should only put POD-objects onto the stack. This enables correct unrolling in case of
-     * errors, thereby keeping the current connection alive. Therefore, we need to allocate all non-POD objects on the heap.
-     * Even worse, we are forced to use explicit new/delete syntax here, because smart pointers once again are not PODs.
-     *
-     * Notice that this code will leak in case of errors because we cannot clean up the allocated memory correctly.
-     *
-     * XXX: Maybe we can figure something out to prevent leakage.
-     */
-    antlr4::ANTLRInputStream *parser_input = new antlr4::ANTLRInputStream(hint_string);
-    pg_lab::HintBlockLexer *lexer = new pg_lab::HintBlockLexer(parser_input);
-    antlr4::CommonTokenStream *tokens = new antlr4::CommonTokenStream(lexer);
-    pg_lab::HintBlockParser *parser = new pg_lab::HintBlockParser(tokens);
-
-    antlr4::tree::ParseTree *tree = parser->hint_block();
-    HintBlockListener *listener = new HintBlockListener(root, hints);
-    antlr4::tree::ParseTreeWalker::DEFAULT.walk(listener, tree);
-
-    delete listener;
-    delete parser;
-    delete tokens;
-    delete lexer;
-    delete parser_input;
-    delete query_buffer;
-
-    if (hints->join_order_hint && hash_get_num_entries(hints->operator_hints) > 0)
-        link_join_order_operator_hints(hints->join_order_hint, hints->operator_hints);
-
-    // if (hints->parallel_workers > 0 && !hints->parallelize_entire_plan)
-    //     determine_parallel_rels(hints);
+    antlr4::tree::ParseTree *tree = parser.hint_block();
+    HintBlockListener listener(root, hints);
+    antlr4::tree::ParseTreeWalker::DEFAULT.walk(&listener, tree);
 }
 
-
-void
-free_hints(PlannerHints *hints)
-{
-    if (!hints)
-        return;
-
-    if (hints->join_order_hint)
-        free_join_order(hints->join_order_hint);
-
-    hash_destroy(hints->operator_hints);
-    hash_destroy(hints->cardinality_hints);
-    hash_destroy(hints->cost_hints);
 }

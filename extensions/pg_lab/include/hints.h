@@ -96,9 +96,9 @@ typedef struct JoinOrderIterator
     Bitmapset *current_relids;
 } JoinOrderIterator;
 
-extern void init_join_order_iterator(JoinOrderIterator *iterator, JoinOrder *join_order);
-extern void join_order_iterator_next(JoinOrderIterator *iterator);
-extern void free_join_order_iterator(JoinOrderIterator *iterator);
+extern void joinorder_it_init(JoinOrderIterator *iterator, JoinOrder *join_order);
+extern void joinorder_it_next(JoinOrderIterator *iterator);
+extern void joinorder_it_free(JoinOrderIterator *iterator);
 
 typedef struct CardinalityHint
 {
@@ -140,7 +140,6 @@ typedef struct CostHint
 
 typedef struct PlannerHints
 {
-
     char *raw_query;
 
     bool contains_hint;
@@ -153,19 +152,37 @@ typedef struct PlannerHints
 
     JoinOrder *join_order_hint;
 
-    HTAB *operator_hints;
+    struct HTAB *operator_hints;
 
-    HTAB *cardinality_hints;
+    struct HTAB *cardinality_hints;
 
-    HTAB *cost_hints;
+    struct HTAB *cost_hints;
 
     Relids parallel_rels;
 
     int parallel_workers;
 
     bool parallelize_entire_plan;
-
 } PlannerHints;
+
+
+extern PlannerHints* init_hints(const char *raw_query);
+extern void free_hints(PlannerHints *hints);
+extern void parse_hint_block(PlannerInfo *root, PlannerHints *hints);
+extern void post_process_hint_block(PlannerHints *hints);
+
+extern void MakeOperatorHint(PlannerInfo *root, PlannerHints *hints, List *rels,
+                             PhysicalOperator op, float par_workers);
+extern void MakeIntermediateOpHint(PlannerInfo *root, PlannerHints *hints, List *rels,
+                                   bool materialize, bool memoize, float par_workers);
+
+extern void MakeCardHint(PlannerInfo *root, PlannerHints *hints, List *rels, Cardinality card);
+
+extern void MakeCostHint(PlannerInfo *root, PlannerHints *hints, List *rels,
+                         PhysicalOperator op, Cost startup_cost, Cost total_cost);
+
+extern JoinOrder* MakeJoinOrderIntermediate(PlannerInfo *root, JoinOrder *outer_child, JoinOrder *inner_child);
+extern JoinOrder* MakeJoinOrderBase(PlannerInfo *root, const char *relname);
 
 #ifdef __cplusplus
 } // extern "C"

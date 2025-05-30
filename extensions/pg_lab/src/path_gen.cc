@@ -268,8 +268,8 @@ force_join_order(PlannerInfo* root, int levels_needed, List* initial_rels)
 
     /* Initialize join order iterator */
     join_order = ((PlannerHints *) root->join_search_private)->join_order_hint;
-    init_join_order_iterator(&iterator, join_order);
-    join_order_iterator_next(&iterator); /* Iterator starts at base rels, skip these */
+    joinorder_it_init(&iterator, join_order);
+    joinorder_it_next(&iterator); /* Iterator starts at base rels, skip these */
 
     /* Main "optimization" loop */
     while (!iterator.done)
@@ -297,14 +297,14 @@ force_join_order(PlannerInfo* root, int levels_needed, List* initial_rels)
             set_cheapest(join_rel);
         }
 
-        join_order_iterator_next(&iterator);
+        joinorder_it_next(&iterator);
     }
 
     /* Post-process generated relations, same as standard_join_search() does */
     final_rel = (RelOptInfo *) linitial(root->join_rel_level[levels_needed]);
     root->join_rel_level = NULL;
 
-    free_join_order_iterator(&iterator);
+    joinorder_it_free(&iterator);
     return final_rel;
 }
 
