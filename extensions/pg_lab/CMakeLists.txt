@@ -9,7 +9,7 @@ include(FetchContent)
 set(CMAKE_GENERATOR "Unix Makefiles")
 set(CXX_STANDARD_REQUIRED 20)
 set(CMAKE_CXX_STANDARD 20)
-add_compile_options(-fPIC -g)
+add_compile_options(-fPIC -g -Wall -Wextra)
 
 if (CMAKE_BUILD_TYPE STREQUAL "")
     set(CMAKE_BUILD_TYPE "Debug")
@@ -58,7 +58,7 @@ antlr_target(HintBlockGrammar HintBlock.g4 BOTH LISTENER PACKAGE pg_lab)
 # Project config
 #
 
-add_library(pg_lab SHARED
+add_library(pg_lab MODULE
     src/pg_lab.cc
     src/hints.cc
     src/hint_parser.cc
@@ -66,7 +66,9 @@ add_library(pg_lab SHARED
     ${ANTLR_HintBlockGrammar_CXX_OUTPUTS})
 
 if(APPLE)
-    set_target_properties(pg_lab PROPERTIES LINK_FLAGS "-undefined dynamic_lookup")
+    set_target_properties(pg_lab PROPERTIES
+        LINK_FLAGS "-Wl,-undefined,dynamic_lookup -Wl,-flat_namespace"
+    )
 endif()
 
 target_link_libraries(pg_lab PRIVATE antlr4_static)
