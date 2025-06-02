@@ -732,28 +732,45 @@ hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *new_path)
         return;
     }
 
-    if (current_hints->parallel_mode == PARMODE_DEFAULT)
+    switch (current_hints->parallel_mode)
     {
-        if (prev_add_partial_path_hook)
-            (*prev_add_partial_path_hook)(parent_rel, new_path);
-        else
-            standard_add_partial_path(parent_rel, new_path);
-        return;
+        case PARMODE_DEFAULT:
+            keep_new = true;
+            break;
+
+        case PARMODE_PARALLEL:
+            if (current_hints->parallelize_entire_plan || !current_hints->parallel_rels)
+                keep_new = true;
+            else
+                keep_new = bms_is_subset(PathRelids(new_path), current_hints->parallel_rels);
+            break;
+
+        default:
+            ereport(ERROR, errmsg("Unknown parallel mode"));
+            return; /* keep the compiler quiet */
     }
 
-    Assert(current_hints->parallel_mode == PARMODE_PARALLEL);
-
-    if (current_hints->parallelize_entire_plan || !current_hints->parallel_rels)
+    if (keep_new)
     {
-        if (prev_add_partial_path_hook)
-            (*prev_add_partial_path_hook)(parent_rel, new_path);
-        else
-            standard_add_partial_path(parent_rel, new_path);
-        return;
-    }
+        if (list_length(parent_rel->partial_pathlist) == 1)
+        {
+            Path *placeholder_path;
+            JoinOrder *placeholder_join_order;
+            bool keep_placeholder;
 
-    if (bms_is_subset(PathRelids(new_path), current_hints->parallel_rels))
-    {
+            placeholder_path = (Path *) linitial(parent_rel->partial_pathlist);
+            placeholder_join_order = current_hints->join_order_hint != NULL
+                                     ? traverse_join_order(current_hints->join_order_hint, PathRelids(placeholder_path))
+                                     : NULL;
+            keep_placeholder = path_satisfies_hints(placeholder_path, placeholder_join_order, NULL);
+
+            if (!keep_placeholder)
+            {
+                parent_rel->partial_pathlist = list_delete_first(parent_rel->partial_pathlist);
+                FreePath(placeholder_path);
+            }
+        }
+
         if (prev_add_partial_path_hook)
             (*prev_add_partial_path_hook)(parent_rel, new_path);
         else
@@ -761,7 +778,6 @@ hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *new_path)
     }
     else
         FreePath(new_path);
-    
 }
 
 extern "C" int
