@@ -218,7 +218,7 @@ extern "C" bool
 hint_aware_add_path_precheck(RelOptInfo *parent_rel, Cost startup_cost, Cost total_cost,
                              List *pathkeys, Relids required_outer)
 {
-    if (current_hints)
+    if (current_hints && (current_hints->join_order_hint || current_hints->operator_hints))
         /* XXX: we could be smarter and try to check, whether there actually is a hint concerning the current path */
         return true;
 
@@ -236,7 +236,7 @@ hint_aware_add_path_precheck(RelOptInfo *parent_rel, Cost startup_cost, Cost tot
 extern "C" bool
 hint_aware_add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost, List *pathkeys)
 {
-    if (current_hints)
+    if (current_hints && (current_hints->join_order_hint || current_hints->operator_hints))
         /* XXX: we could be smarter and try to check, whether there actually is a hint concerning the current path */
         return true;
 
@@ -257,7 +257,8 @@ hint_aware_add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost, Li
 #define IsAJoinPath(pathptr) (PathIsA(pathptr, NestLoop) || PathIsA(pathptr, MergeJoin) || PathIsA(pathptr, HashJoin))
 #define IsAIntermediatePath(pathptr) (PathIsA(pathptr, Memoize) || PathIsA(pathptr, Material))
 #define IsAParPath(pathptr) (PathIsA(pathptr, Gather) || PathIsA(pathptr, GatherMerge))
-
+#define PathRelids(pathptr) (pathptr->parent->relids)
+#define FreePath(pathptr) if (IsA(pathptr, IndexScan)) { pfree(pathptr); }
 
 /*
  * Checks, whether the given path has the operator that is required by the current hints.
@@ -501,7 +502,6 @@ path_satisfies_hints(Path *path, JoinOrder *join_node, Path **par_subpath)
     return inner_valid && outer_valid;
 }
 
-
 /*
  * For parallel Result() hints, checks whether the given path satisfies is compatible with the parallelization hints.
  *
@@ -541,6 +541,59 @@ upper_rel_satisfies_parallelization(RelOptInfo *parent_rel, Path *par_subpath)
 }
 
 /*
+ * This function only works for full (i.e. gathered or sequential) paths, not for those candidates that are processed
+ * by add_partial_path()!
+ */
+static bool
+path_satisfies_parallelization(RelOptInfo* parent_rel, Path *par_subpath)
+{
+    switch (current_hints->parallel_mode)
+    {
+        case PARMODE_DEFAULT:
+            /*
+             * In default mode we do not control the creation of parallel plans. Therefore we just accept the new path.
+             */
+            return true;
+
+        case PARMODE_SEQUENTIAL:
+            /*
+             * We are hinted to only produce sequential paths, but we are currently dealing with a parallel path.
+             * It is safe to reject it.
+             */
+            return par_subpath == NULL;
+
+        case PARMODE_PARALLEL:
+            if (!par_subpath)
+                /*
+                * We should only produce parallel plans but we are currently dealing with a sequential path.
+                * This path has no chance of being part of the final plan.
+                */
+                return false;
+
+            if (current_hints->parallelize_entire_plan)
+                return upper_rel_satisfies_parallelization(parent_rel, par_subpath);
+            else if (!current_hints->parallel_rels)
+                /*
+                * We should only produce parallel plans, but it does not matter which part of the plan is executed in
+                * parallel. We can just accept the current (sub)-path.
+                */
+                return true;
+            else
+                /*
+                 * If we should parallelize a specific portion of the query plan (and this portion is not part of the
+                 * upper rel), we need to make sure that this is the correct portion.
+                 */
+                return (IsAScanPath(par_subpath) || IsAJoinPath(par_subpath)) &&
+                        bms_equal(current_hints->parallel_rels, PathRelids(par_subpath));
+
+        default:
+            ereport(ERROR, errmsg("Unknown parallel mode"));
+            return false; /* keep the compiler quiet */
+    }
+}
+
+
+/*
  * The magic sauce that makes pg_lab's hinting work.
  *
  * Conceptually, this hook's job is quite straightforward: whenever Postgres generates a new path, we check whether it
@@ -548,16 +601,23 @@ upper_rel_satisfies_parallelization(RelOptInfo *parent_rel, Path *par_subpath)
  *
  * However, there are many subtleties that we need to take care of, especially with regards to parallel plans. These issues
  * along with our solutions are described directly in the code below.
+ * 
+ * TODO:
+ *  pfree() rejected non-index scan paths
+ *  always prune existing paths once we accept a new path. Make sure to also include parallelization-based pruning!
+ * 
+ * 
+ * NB: in order for the implementation to work correctly, we cannot use parent_rel->relids ever! Instead, we always need to
+ * use new_path->parent->relids! This is because parent_rel->relids is not set for upper rels (for whatever reason..).
  */
 extern "C" void
 hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
 {
     Path        *par_subpath;
     JoinOrder   *join_order;
-    bool         contains_par_subplan;
-    bool         keep_new = true;
+    bool         keep_new;
 
-    if (!current_hints || !current_hints->contains_hint)
+    if (!current_hints || !current_hints->contains_hint || parent_rel->pathlist == NIL)
     {
         if (prev_add_path_hook)
             (*prev_add_path_hook)(parent_rel, new_path);
@@ -569,155 +629,83 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
     /* We first check for structural compatibility with our hints. */
 
     join_order = current_hints->join_order_hint != NULL
-                 ? traverse_join_order(current_hints->join_order_hint, parent_rel->relids)
+                 ? traverse_join_order(current_hints->join_order_hint, PathRelids(new_path))
                  : NULL;
 
+    /*
+     * We perform the structural and parallelization-based checks sequentially, because the structural check sets the
+     * parallel subpaths. This subpath in turn serves as the primary input for the parallelization check.
+     */
     par_subpath = NULL;
-    if (!path_satisfies_hints(new_path, join_order, &par_subpath))
-        return;
+    keep_new = path_satisfies_hints(new_path, join_order, &par_subpath);
+    keep_new = keep_new && path_satisfies_parallelization(parent_rel, par_subpath);
+
+    if (keep_new)
+    {
+        if (list_length(parent_rel->pathlist) == 1)
+        {
+            Path *placeholder_path;
+            Path *placeholder_par_subpath;
+            JoinOrder *placeholder_join_order;
+            bool keep_placeholder;
+
+            placeholder_path = (Path *) linitial(parent_rel->pathlist);
+            placeholder_join_order = current_hints->join_order_hint != NULL
+                                     ? traverse_join_order(current_hints->join_order_hint, PathRelids(placeholder_path))
+                                     : NULL;
+            keep_placeholder = path_satisfies_hints(placeholder_path, placeholder_join_order, &placeholder_par_subpath);
+            keep_placeholder = keep_placeholder && path_satisfies_parallelization(parent_rel, placeholder_par_subpath);
+
+            if (!keep_placeholder)
+            {
+                parent_rel->pathlist = list_delete_first(parent_rel->pathlist);
+                FreePath(placeholder_path);
+            }
+        }
+
+        if (prev_add_path_hook)
+            (*prev_add_path_hook)(parent_rel, new_path);
+        else
+            standard_add_path(parent_rel, new_path);
+    }
+    else
+        FreePath(new_path);
 
     /*
-     * At this point we know that the new path at least satisfies the hints regarding join, scan and intermediate operators.
-     * It is also on the hinted join order.
+     * At this point we know that the new path at least satisfies the hints regarding join, scan and intermediate
+     * operators. It is also on the hinted join order.
      *
-     * Now, we just need to make sure that the path is also compatible with our parallelization hints. However, this turns out
-     * to be much more complicated than it seems at first glance.
+     * Now, we just need to make sure that the path is also compatible with our parallelization hints. However, this turns
+     * out to be much more complicated than it seems at first glance.
      *
-     * This is mostly due to the fact that there are a lot of different cases that we need to handle. add_path() is called for
-     * both strictly sequential paths and parallel paths that have been gathered. Furthermore, it handles paths during the
-     * join phase as well as for the upper rel. But the logical flow between these two phases is reversed: whereas gather paths
-     * are only consider after their sequential counterparts during the join phase, the upper rel first considers gathering
-     * the partial paths and afterwards sequential ones.
+     * This is mostly due to the fact that there are a lot of different cases that we need to handle. add_path() is called
+     * for both strictly sequential paths and parallel paths that have been gathered. Furthermore, it handles paths during
+     * the join phase as well as for the upper rel. But the logical flow between these two phases is reversed: whereas
+     * gather paths are only consider after their sequential counterparts during the join phase, the upper rel first
+     * considers gathering the partial paths and afterwards sequential ones.
      *
-     * This is bad, because at the end of each of the sub-phases, set_cheapest() is called. But set_cheapest() fails the entire
-     * query if there are no paths. We encounter this case frequently when using parallel hints.
+     * This is bad, because at the end of each of the sub-phases, set_cheapest() is called. But set_cheapest() fails the
+     * entire query if there are no paths. We encounter this case frequently when using parallel hints.
      * The solution is the spaghetti-ish control flow logic below.
      * We try our best to explain each of the branches, but it is still quite convoluted.
      *
      * Query optimization is just complicated, man.
      */
-
-    contains_par_subplan = par_subpath != NULL;
-
-    if (current_hints->parallel_mode == PARMODE_SEQUENTIAL && contains_par_subplan)
-    {
-        /*
-         * We are hinted to only produce sequential paths, but we are currently dealing with a parallel path.
-         * It is safe to reject it.
-         *
-         * Notice that this branch should never be reached, because we should have already rejected the partial path.
-         * Therefore we issue a warning to investigate this further.
-         *
-         * TODO: test sequential mode with upper rel queries. This should not work right now?
-         */
-        ereport(WARNING,
-                errmsg("[pg_lab] Reached presumably dead code path in add_path()"),
-                errdetail("Parallel mode is set to sequential, but parallel subplan was detected."));
-        return;
-    }
-
-    if (current_hints->parallel_mode == PARMODE_SEQUENTIAL || current_hints->parallel_mode == PARMODE_DEFAULT)
-    {
-        if (prev_add_path_hook)
-            (*prev_add_path_hook)(parent_rel, new_path);
-        else
-            standard_add_path(parent_rel, new_path);
-        return;
-    }
-
-    Assert(current_hints->parallel_mode == PARMODE_PARALLEL);
-
-    if (IS_UPPER_REL(parent_rel) && parent_rel->pathlist == NIL)
-    {
-        /*
-         * TODO
-         */
-
-        if (prev_add_path_hook)
-            (*prev_add_path_hook)(parent_rel, new_path);
-        else
-            standard_add_path(parent_rel, new_path);
-
-        return;
-    }
-
-    if (par_subpath)
-    {
-        /*
-         * We are tasked with only producing parallel paths and we found a parallelized path.
-         * Now, we just need to make sure that this is path is parallelized correctly.
-         */
-
-        if (current_hints->parallelize_entire_plan)
-        {
-            keep_new = upper_rel_satisfies_parallelization(parent_rel, par_subpath);
-        }
-        else if (current_hints->parallel_rels == NULL)
-            /*
-             * We should only produce parallel plans, but it does not matter where we start with the parallelization.
-             * Since we already know that we are currently working with a partial path, we can just accept it.
-             */
-            keep_new = true;
-        else
-        {
-            Assert(current_hints->parallel_rels != NULL);
-            keep_new = bms_equal(current_hints->parallel_rels, par_subpath->parent->relids) &&
-                       (IsAJoinPath(par_subpath) || IsAScanPath(par_subpath));
-        }
-
-        if (keep_new)
-        {
-            ListCell *lc;
-
-            foreach (lc, parent_rel->pathlist)
-            {
-                Path *other_path = (Path *) lfirst(lc);
-                Path *other_gather;
-                bool  prune_other;
-
-                prune_other = path_satisfies_hints(other_path, join_order, &other_gather) ||
-                              other_gather == NULL ||
-                              (current_hints->parallelize_entire_plan &&
-                                !upper_rel_satisfies_parallelization(parent_rel, other_gather));
-
-                if (prune_other)
-                    parent_rel->pathlist = foreach_delete_current(parent_rel->pathlist, lc);
-            }
-        }
-    }
-    else if (list_length(parent_rel->pathlist) == 0)
-    {
-        /*
-         * TODO
-         */
-
-        keep_new = true;
-    }
-    else
-    {
-        /*
-         * TODO
-         */
-
-        keep_new = false;
-    }
-
-    if (keep_new)
-    {
-        if (prev_add_path_hook)
-            (*prev_add_path_hook)(parent_rel, new_path);
-        else
-            standard_add_path(parent_rel, new_path);
-    }
 }
 
+/*
+ * TODO
+ *
+ * NB: in order for the implementation to work correctly, we cannot use parent_rel->relids ever! Instead, we always need to
+ * use new_path->parent->relids! This is because parent_rel->relids is not set for upper rels (for whatever reason..).
+ */
 extern "C" void
 hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *new_path)
 {
     JoinOrder *join_order;
     bool keep_new;
 
-    if (!current_hints || !current_hints->contains_hint)
+    if (!current_hints || !current_hints->contains_hint || parent_rel->partial_pathlist == NIL)
     {
         if (prev_add_path_hook)
             (*prev_add_path_hook)(parent_rel, new_path);
@@ -727,35 +715,27 @@ hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *new_path)
     }
 
     if (current_hints->parallel_mode == PARMODE_SEQUENTIAL)
-        /*
-         * We are hinted to only produce sequential path, but are currently considering a parallel path.
-         * Reject it.
-         */
+    {
+        FreePath(new_path);
         return;
+    }
 
     join_order = current_hints->join_order_hint != NULL
-                 ? traverse_join_order(current_hints->join_order_hint, parent_rel->relids)
+                 ? traverse_join_order(current_hints->join_order_hint, PathRelids(new_path))
                  : NULL;
 
-    if (!path_satisfies_hints(new_path, join_order, NULL))
+    keep_new = path_satisfies_hints(new_path, join_order, NULL);
+    
+    if (!keep_new)
+    {
+        FreePath(new_path);
         return;
-
-    /*
-     * Whether we may or may not accept the new path depends on a lot of rather spaghetti-ish decision logic.
-     * This is not particularly pretty, but it gets the job done (at least for now).
-     *
-     * The basic idea is as follows:
-     * TODO
-     */
+    }
 
     if (current_hints->parallel_mode == PARMODE_DEFAULT)
     {
-        /*
-         * In default mode we can do whatever, as long as join order and physical operators are satisfied
-         * (which was already checked above).
-         */
-        if (prev_add_path_hook)
-            (*prev_add_path_hook)(parent_rel, new_path);
+        if (prev_add_partial_path_hook)
+            (*prev_add_partial_path_hook)(parent_rel, new_path);
         else
             standard_add_partial_path(parent_rel, new_path);
         return;
@@ -763,24 +743,25 @@ hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *new_path)
 
     Assert(current_hints->parallel_mode == PARMODE_PARALLEL);
 
-    if (current_hints->parallel_rels == NULL || current_hints->parallelize_entire_plan)
-        /*
-         * TODO
-         */
-        keep_new = true;
-    else
-        /*
-         * TODO
-         */
-        keep_new = bms_is_subset(parent_rel->relids, current_hints->parallel_rels);
-
-    if (keep_new)
+    if (current_hints->parallelize_entire_plan || !current_hints->parallel_rels)
     {
-        if (prev_add_path_hook)
-            (*prev_add_path_hook)(parent_rel, new_path);
+        if (prev_add_partial_path_hook)
+            (*prev_add_partial_path_hook)(parent_rel, new_path);
+        else
+            standard_add_partial_path(parent_rel, new_path);
+        return;
+    }
+
+    if (bms_is_subset(PathRelids(new_path), current_hints->parallel_rels))
+    {
+        if (prev_add_partial_path_hook)
+            (*prev_add_partial_path_hook)(parent_rel, new_path);
         else
             standard_add_partial_path(parent_rel, new_path);
     }
+    else
+        FreePath(new_path);
+    
 }
 
 extern "C" int

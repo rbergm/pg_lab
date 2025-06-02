@@ -21,6 +21,12 @@ endif()
 set(PG_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../pg-build/pg-17" CACHE PATH "PostgreSQL server installation directory")
 message(STATUS "Using PostgreSQL server path: ${PG_INSTALL_DIR}")
 
+
+set(PGLAB_TRACE CACHE BOOL "Enable tracing of the hinting extension" OFF)
+if (PGLAB_TRACE)
+    add_compile_definitions(PGLAB_TRACE)
+endif()
+
 #
 # Antlr4 config
 #

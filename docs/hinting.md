@@ -406,6 +406,16 @@ JOIN cast_info ci ON t.id = ci.movie_id
 
 In this example, the join between _mi_ and _t_ is never performed. Hence, the nested-loop hint is ignored.
 
+Likewise, the following does not work because Postgres never considers index paths for the following query:
+
+```
+imdb=# EXPLAIN /*=pg_lab= IdxScan(t) */ SELECT * FROM title;
+                            QUERY PLAN                             
+-------------------------------------------------------------------
+ Seq Scan on title t  (cost=0.00..115250.42 rows=4737042 width=94)
+(1 row)
+```
+
 ### Join Order shenanigans
 
 When using the `JoinOrder` hint, this hint not only enforces the join order, but also the join direction: a hint

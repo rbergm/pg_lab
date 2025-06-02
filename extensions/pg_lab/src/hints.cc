@@ -2,13 +2,28 @@
 #include <limits.h>
 #include <math.h>
 
-#include "nodes/bitmapset.h"
-
 #include "hints.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+const char *
+PhysicalOperatorToString(PhysicalOperator op)
+{
+    switch (op)
+    {
+        case OP_SEQSCAN:      return "SeqScan";
+        case OP_IDXSCAN:      return "IdxScan";
+        case OP_BITMAPSCAN:   return "BitmapScan";
+        case OP_NESTLOOP:     return "NestLoop";
+        case OP_HASHJOIN:     return "HashJoin";
+        case OP_MERGEJOIN:    return "MergeJoin";
+        case OP_MEMOIZE:      return "Memoize";
+        case OP_MATERIALIZE:  return "Materialize";
+        default:              return "Unknown";
+    }
+}
 
 void free_join_order(JoinOrder *join_order)
 {
@@ -144,6 +159,21 @@ joinorder_it_free(JoinOrderIterator *iterator)
     bms_free(iterator->current_relids);
 }
 
+void
+joinorder_to_string(JoinOrder *join_order, StringInfo buf)
+{
+    if (join_order->node_type == BASE_REL)
+        appendStringInfoString(buf, join_order->base_identifier);
+    else
+    {
+        appendStringInfoChar(buf, '(');
+        joinorder_to_string(join_order->outer_child, buf);
+        appendStringInfoString(buf, ", ");
+        joinorder_to_string(join_order->inner_child, buf);
+        appendStringInfoChar(buf, ')');
+    }
+}
+
 
 static Index
 FetchRTIndex(PlannerInfo *root, const char *relname)
@@ -252,6 +282,7 @@ post_process_hint_block(PlannerHints *hints)
     if (!hints ||
         !hints->contains_hint ||
         !hints->join_order_hint ||
+        !hints->operator_hints ||
         hash_get_num_entries(hints->operator_hints) == 0)
         return;
 
@@ -306,6 +337,13 @@ MakeOperatorHint(PlannerInfo *root, PlannerHints *hints, List *rels,
 
     relids = FetchRelids(root, rels);
     op_hint = (OperatorHint *) hash_search(hints->operator_hints, &relids, HASH_ENTER, &found);
+
+    #ifdef PGLAB_TRACE
+
+    ereport(INFO, (errmsg("Creating operator hint"),
+                   errdetail("op=%s, rels=%s",  PhysicalOperatorToString(op), relnames_to_string(rels))));
+
+    #endif
 
     if (found)
     {

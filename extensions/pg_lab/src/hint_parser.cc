@@ -34,6 +34,8 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
                 hints_->mode = ANCHORED;
             else
                 elog(ERROR, "Unknown plan mode setting: %s", ctx->getText().c_str());
+
+            hints_->contains_hint = true;
         }
 
         void enterParallelization_setting(pg_lab::HintBlockParser::Parallelization_settingContext *ctx) override
@@ -54,23 +56,42 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
                 hints_->parallel_mode = PARMODE_DEFAULT;
             else
                 ereport(ERROR, errmsg("[pg_lab] Unknown parallelization mode setting: %s", ctx->getText().c_str()));
+
+            hints_->contains_hint = true;
         }
 
         void enterJoin_order_hint(pg_lab::HintBlockParser::Join_order_hintContext *ctx) override
         {
             auto join_order = this->ParseJoinOrder(ctx->join_order_entry());
             hints_->join_order_hint = join_order;
+            hints_->contains_hint = true;
+
+            #ifdef PGLAB_TRACE
+
+            StringInfo joinorder_debug = makeStringInfo();
+            joinorder_to_string(join_order, joinorder_debug);
+            ereport(INFO, (errmsg("Creating join order hint"), errdetail("%s", joinorder_debug->data)));
+            destroyStringInfo(joinorder_debug);
+
+            #endif
+            
         }
 
         void enterJoin_op_hint(pg_lab::HintBlockParser::Join_op_hintContext *ctx) override
         {
             
-            List *relnames;
-            for (const auto &relname : ctx->binary_rel_id()->relation_id())
-            relnames = lappend(relnames, (void *) relname->getText().c_str());
-            
-            for (const auto &relname : ctx->relation_id())
-            relnames = lappend(relnames, (void *) relname->getText().c_str());
+            List *relnames = NIL;
+            for (const auto &rel_ctx : ctx->binary_rel_id()->relation_id())
+            {
+                auto relname = pstrdup(rel_ctx->getText().c_str());
+                relnames = lappend(relnames, relname);
+            }
+
+            for (const auto &rel_ctx : ctx->relation_id())
+            {
+                auto relname = pstrdup(rel_ctx->getText().c_str());
+                relnames = lappend(relnames, relname);
+            }
             
             
             PhysicalOperator op = OP_UNKNOWN;
@@ -88,10 +109,12 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
                 ereport(ERROR, errmsg("[pg_lab] Unknown join operator: %s", ctx->getText().c_str()));
 
             ParseOperatorHint(relnames, op, ctx->param_list());
+            list_free_deep(relnames);
         }
 
         void enterScan_op_hint(pg_lab::HintBlockParser::Scan_op_hintContext *ctx) override {
-            List *relnames = list_make1((void *) ctx->relation_id()->getText().c_str());
+            auto relname = pstrdup(ctx->relation_id()->getText().c_str());
+            List *relnames = list_make1(relname);
             
             PhysicalOperator op = OP_UNKNOWN;
             if (ctx->SEQSCAN())
@@ -109,6 +132,7 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
 
 
             ParseOperatorHint(relnames, op, ctx->param_list());
+            list_free_deep(relnames);
         }
 
         void enterResult_hint(pg_lab::HintBlockParser::Result_hintContext *ctx) override
@@ -134,14 +158,16 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
         void enterCardinality_hint(pg_lab::HintBlockParser::Cardinality_hintContext *ctx) override
         {
             List *relnames = NIL;
-            for (const auto &relname : ctx->relation_id())
+            for (const auto &rel_ctx : ctx->relation_id())
             {
-                relnames = lappend(relnames, (void *) relname->getText().c_str());
+                auto relname = pstrdup(rel_ctx->getText().c_str());
+                relnames = lappend(relnames, relname);
             }
 
             Cardinality cardinality = std::atof(ctx->INT()->getText().c_str());
 
             MakeCardHint(root_, hints_, relnames, cardinality);
+            list_free_deep(relnames);
         }
 
     private:
@@ -230,8 +256,10 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
 
         JoinOrder *ParseJoinOrderBase(pg_lab::HintBlockParser::Base_join_orderContext *ctx)
         {
-            auto relname = ctx->relation_id()->getText().c_str();
-            return MakeJoinOrderBase(root_, relname);
+            auto relname = pstrdup(ctx->relation_id()->getText().c_str());
+            auto join_order = MakeJoinOrderBase(root_, relname);
+            pfree(relname);
+            return join_order;
         }
 
 };

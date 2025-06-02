@@ -53,6 +53,8 @@ typedef enum PhysicalOperator
     OP_MATERIALIZE
 } PhysicalOperator;
 
+extern const char *PhysicalOperatorToString(PhysicalOperator op);
+
 typedef struct OperatorHint
 {
     Relids           relids;
@@ -99,6 +101,8 @@ typedef struct JoinOrderIterator
 extern void joinorder_it_init(JoinOrderIterator *iterator, JoinOrder *join_order);
 extern void joinorder_it_next(JoinOrderIterator *iterator);
 extern void joinorder_it_free(JoinOrderIterator *iterator);
+
+extern void joinorder_to_string(JoinOrder *join_order, StringInfo buf);
 
 typedef struct CardinalityHint
 {
