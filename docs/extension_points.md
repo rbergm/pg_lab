@@ -20,14 +20,14 @@ However, these hooks barely scratch the surface of common common research goals.
 to implement a custom cardinality estimation strategy as an extension (i.e. without modifying the actual Postgres source
 code). Therefore, pg_lab adds additional extension points to allow for such use cases.
 
-[^physical-ops] Actually, *join_search_hook* does not handle the selection of physical operators by itself, but it collects
-    which access paths are available on the intermediate (potentially including different join orders). Furthermore, it
-    determines the cost of each of these paths. Essentially, this gives users complete control over the selected join
-    order as well as the physical operators.
+[^physical-ops]: Actually, *join_search_hook* does not handle the selection of physical operators by itself, but it
+  collects which access paths are available on the intermediate (potentially including different join orders). Furthermore,
+  it determines the cost of each of these paths. Essentially, this gives users complete control over the selected join
+  order as well as the physical operators.
 
-[^pathlist-hooks] The names of these hooks are a bit misleading because they explicitly allow the user to also remove
-    existing paths from the pathlists. By combining this deletion step with a subsequent (re-)creation of the desired
-    paths, users once again have complete control over the pathlist.
+[^pathlist-hooks]: The names of these hooks are a bit misleading because they explicitly allow the user to also remove
+  existing paths from the pathlists. By combining this deletion step with a subsequent (re-)creation of the desired
+  paths, users once again have complete control over the pathlist.
 
 
 ### Overview
@@ -99,10 +99,10 @@ We did not implement hooks for every single operator yet (simple because there a
 If a cost hook that you need for your specific use case should be missing, feel free to
 [open an issue](https://github.com/rbergm/pg_lab/issues/new/choose) or create a PR[^creating-prs] right away.
 
-[^creating-prs] On a technical level, we maintain 
-    [our own Postgres fork](https://github.com/rbergm/pg_lab/issues/new/choose) to keep track of all modifications that are
-    required to keep pg_lab running (and to integrate upstream changes cleanly). Therefore, the PR has to be opened against
-    this repo.
+[^creating-prs]: On a technical level, we maintain
+  [our own Postgres fork](https://github.com/rbergm/pg_lab/issues/new/choose) to keep track of all modifications that are
+  required to keep pg_lab running (and to integrate upstream changes cleanly). Therefore, the PR has to be opened against
+  this repo.
 
 **Scan operators:**
 
@@ -260,7 +260,7 @@ Afterwards, the entire subplan is executed in parallel.
 Notice that the final number of parallel processes is the number of parallel workers plus one, because the main backend
 process also operates on part of the input (in addition to gathering the results from the workers)[^parallel-processing].
 
-[^parallel-processing] However, if fewer than estimated parallel workers are available at execution time, not all workers
+[^parallel-processing]: However, if fewer than estimated parallel workers are available at execution time, not all workers
   might be used.
 
 
