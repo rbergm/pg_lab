@@ -1,191 +1,164 @@
 # pg_lab
 
 ![GitHub License](https://img.shields.io/github/license/rbergm/pg_lab)
-![Static Badge](https://img.shields.io/badge/version-0.1.0-blue)
+![Static Badge](https://img.shields.io/badge/version-0.2.0-blue)
 
 <img src="assets/pg_lab_logo.png" width="256" alt="The Logo of pg_lab: a blue elephant wearing a chemist's coat is surrounded by various reagents." />
 
-_pg\_lab_ is a research-focused fork of PostgreSQL. Its goal is to enable research into the design of query optimizers for
-relational database systems.
+_pg\_lab_ is a research-focused fork of PostgreSQL.
+It has two main goals:
 
-The Postgres fork provides extension hooks for many important aspects of the query optimizer, such as the selection of a join
-order or physical access paths, as well as the computation of cardinality and cost estimates. In addition, pg_lab ships a
-hinting language inspired by [pg_hint_plan](https://github.com/ossc-db/pg_hint_plan) that allows to embed such decisions in
-comment blocks of the actual SQL queries:
+1. allow Postgres extensions to modify details of the query planner, such as the cardinality estimator or cost model
+2. enable the modification of planner decisions through detailed query hints
 
-```sql
-/*=pg_lab=
- Card(a #42000)
+These goals are achieved by introducing new extensions points into the original Postgres code base and shipping a hinting
+extension similar to [pg_hint_plan](https://github.com/ossc-db/pg_hint_plan).
+Essentially, this requires to maintain a fork of the Postgres source code (available at
+https://github.com/rbergm/postgres).
+Our SIGMOD'2025 paper [^elephant] provides some insight into the motivation behind pg_lab.
 
- JoinOrder(((a b) c))
- IdxScan(b)
- NestLoop(a b)
+| 💻 [Installation](docs/installation.md) | 📝 [Hinting](docs/hinting.md) | ⚙ [Extension Points](docs/extension_points.md) |
 
- HashJoin(a b c (COST start=50 total=500))
- MergeJoin(a b c (COST start=25 total=400))
- NestLoop(a b c (COST start=100 total=1000))
-*/
-SELECT count(*)
-FROM a, b, c
-WHERE a.id = b.id
-  AND a.id = c.id
+
+## ⚡ Quick start
+
+You can install pg_lab either as a local Postgres server or as a Docker container.
+
+For the **local installation** on a Ubuntu-based system, use the following:
+
+```sh
+sudo apt install -y \
+   build-essential sudo tzdata procps \
+   bison flex curl pkg-config cmake llvm clang \
+   git vim unzip zstd default-jre \
+   libicu-dev libreadline-dev libssl-dev liblz4-dev libossp-uuid-dev
+
+./postgres-setup.sh --pg-ver 17 --debug --stop
+
+. ./postgres-start.sh
 ```
 
-## Comparison to pg_hint_plan
+For the **Docker installation**, use the following:
 
-While a lot of the behavior of pg_lab can also be found in pg_hint_plan, some
-features are only present in pg_lab, but not in pg_hint_plan and vice-versa. See the table below for a comparison.
-Furthermore, pg_lab uses a different design philosophy: instead of directly modifying the optimizer's logic, pg_lab utilizes
-extension points to implement its custom behavior. The fundamental control-flow of the optimizer is thereby left intact.
+```sh
+docker build \
+  -t pg_lab:latest \
+  --build-arg PGVER=17 \
+  --build-arg TIMEZONE=$(cat /etc/timezone) \
+  .
+
+docker run -d --name pg_lab -p 5432:5432 pg_lab:latest
+
+docker exec -it pg_lab /bin/bash
+```
+
+See the [Installation](docs/installation.md) documentation for more details on installation and usage of pg_lab.
+
+> [!IMPORTANT]
+> pg_lab is currently only tested Ubuntu/WSL and MacOS.
+> Other platforms might (accidentally) work, but we cannot guarantee that.
+
+
+## 📊 Comparison with pg_hint_plan
+
+While a lot of the hinting behavior of pg_lab can also be found in pg_hint_plan, some features are only present in pg_lab
+but not in pg_hint_plan and vice-versa.
+See the table below for a comparison.
+In addition to functional differences, pg_lab uses a different design philosophy:
+instead of directly modifying the optimizer's logic, pg_lab utilizes extension points to implement its custom behavior.
+The fundamental control-flow of the optimizer is thereby left intact.
+The downside of this approach is that we essentially require a fork of the upstream Postgres source code to implement
+pg_lab.
 
 | Feature | pg_hint_plan | pg_lab |
 |---------|--------------|--------|
 | Forcing the join order | ✅ `Leading` hint | ✅ `JoinOrder` hint |
-| Forcing physical operators | ✅ Specific hints, e.g. `NestLoop(a b)` | ✅ Specific hints, e.g. `NestLoop(a b (FORCED))` |
+| Forcing physical operators | ✅ Specific hints, e.g. `NestLoop(a b)` | ✅ Specific hints, e.g. `NestLoop(a b)` |
 | Hints for Materialize and Memoize operators | ✅ Memoize, ❌ Materialize | ✅ `Memo` and `Material` hints |
-| Disabling specific operators | ✅ `NoNestLoop`, etc. hints | ❌ Not supported but planned |
+| Disabling specific operators | ✅ `NoNestLoop`, etc. hints | ❌ Not supported (⏳ but planned) |
 | Custom cardinality estimates for joins | ✅ `Rows` hint | ✅ `Card` hint |
 | Custom cardinality estimates for base tables | ❌ Not supported | ✅ `Card` hint |
-| Parallel workers for joins | ✅ `Parallel` hint | ❌ Not supported (⏳ but planned)
-| Storing and automatically re-using hint sets | ✅ Specific hint table | ❌ Not supported
-| Custom cost estimates for joins | ❌ Not supported | ✅ Specific hints, e.g. `NestLoop(a b (COST start=4.2 total=42.42))`
-| Custom cost estimates for base tables | ❌ Not supported | ✅ Specific hints, e.g. `SeqScan(a (COST start=4.2 total=42.42))`
+| Parallel workers for joins | ❔ `Parallel` hint | ✅ e.g., as `workers` hint for operators |
+| Storing and automatically re-using hint sets | ✅ Specific hint table | ❌ Not supported |
+| Custom cost estimates for joins | ❌ Not supported | ✅ Specific hints, e.g. `NestLoop(a b (COST start=4.2 total=42.42))` |
+| Custom cost estimates for base tables | ❌ Not supported | ✅ Specific hints, e.g. `SeqScan(a (COST start=4.2 total=42.42))` |
 
+In the end, we took a lot of inspiration from pg_hint_plan for the design of pg_lab's hinting system:
 
-## Installation
-
-The `postgres-setup.sh` acts as the main installation tool. It pulls and compiles a new local installation of Postgres. No
-global paths, etc. are modified. See `./postgres-setup.sh --help` for additional details.
-Make sure to have the appropriate build tools available on your system. The setup has been tested for Ubuntu 22.04, but should
-also work for other Linux distributions.
-
-> [!IMPORTANT]
-> Depending on your distribution, the Postgres build process will require a number of libraries to be available on your system.
-> For Ubuntu-ish systems, these can be installed like so
->
-> ```sh
-> sudo apt install -y \
->    build-essential sudo tzdata procps \
->    bison flex curl pkg-config cmake llvm clang \
->    git vim unzip zstd default-jre \
->    libicu-dev libreadline-dev libssl-dev liblz4-dev libossp-uuid-dev
-> ```
->
-> On MacOS, the following packages can be installed via homebrew:
->
-> ```zsh
-> brew install \
->    icu4c openssl llvm e2fsprogs
-> ```
->
-> Depending on your LLVM configuration, you might need to prefix the setup script with the location of the _llvm-config_,
-> like so: `LLVM_CONFIG="/opt/homebrew/Cellar/llvm/.../bin/llvm-config" ./postgres-setup.sh --your --options`.
->
-> For other package managers, please consult the corresponding documentation to determine your specific set of packages.
-
-
-## Usage
-
-Since pg_lab is both a fork of Postgres, as well as an extension, it can be used for two different use-cases:
-
-1. enforcing optimizer decisions through an external component by means of hints embedded into the SQL query
-2. modifying the optimizer behavior through a Postgres extension
-
-### Hint syntax
-
-All hints must be embedded in a comment that is submitted to the Postgres server as part of the SQL query. The comment _must_
-have the following syntax in order to be recognized:
-
-```
+```sql
 /*=pg_lab=
- <hint list>
+ Card(t #42000)
+
+ JoinOrder(((t mi) ci))
+ IdxScan(mi)
+ NestLoop(t mi (workers=4))
+
+ HashJoin(t mi ci (COST start=50 total=500))
 */
+SELECT count(*)
+FROM title t
+  JOIN movie_info mi ON t.id = mi.movie_id
+  JOIN cast_info ci ON t.id = ci.movie_id
+WHERE t.production_year > 2000;
 ```
-The usage of newlines is optional. Notice that the hint block detection is currently rather primitive: the extension only
-performs a (context-free) substring search. Therefore, certain queries might trigger the extension unintentionally.
 
-Within the hint block, three types of hints are supported:
-
-- `JoinOrder(<tables>)` enforces the specified join order. Use parantheses to denote subtrees and always wrap the entire join
-  order into another set of parantheses. E.g. `JoinOrder(((A B) C))` enforces the join A ⋈ B to be executed first and the
-  resulting intermediate to be joined to C. Notice that this join is different from `JoinOrder((C (A B)))`: in the first join
-  order, C acted as the inner relation, whereas C is the outer relation in the second example.
-- `Card(<tables> #<rows>)` overwrites the cardinality estimate of the (intermediate) table(s) and sets it to the given number
-  of rows. The rows must be an integer. E.g. `Card(A #42)` sets the estimate for scanning A (including all filters) to 42,
-  whereas `Card(A B C #42)` does the same for the intermediate consisting of the join between A, B and C.
-- `<operator>(<tables>)` forces the (intermediate) result consisting of the specified table(s) to be computed using the given
-  operator. Notice that this does not force the computation of the intermediate. The optimizer is free to use a different join
-  order instead - unless the `JoinOrder` hint is used as well.
-
-  Supported operators are `SeqScan` and `IdxScan` for base relations, e.g. `SeqScan(A)` or `IdxScan(B)`, and `NestLoop`,
-  `MergeJoin` or `HashJoin` for joins, e.g. `MergeJoin(A B)` or `NestLoop(A B C)`.
-
-  You can also add an optional `(FORCED)` clause after the tables to contrast this hint from a cost hint (see next bullet
-  point): `HashJoin(A B C (FORCED))`.
-- `<operator>(<tables> (COST start=<float> total=<float>))` overwrites the native cost estimate for the given operator. The
-  same operator and tables syntax as for the operator-forcing hint is used. Additionally, `BitmapScan` can be used to cost
-  bitmap scans, in which case the cost corresponds to the actual heap operator.
-  For example, `NestLoop(A B (COST start=4.2 total=42.0))`.
-
-Tables can be referred to using either their full names, or aliases.
-
-Notice that hints for physical operators are only used, if the corresponding intermediate is actually computed.
-If the optimizer
-decides to go for a different join order, the hint is not used.
-This is especially important for memoize and materialize hints:
-PostgreSQL only uses these operators under very specific circumstances: both are only used as the inner loops of nested-loop
-joins.
-Hence, if the optimizer decides to use the relation as an outer path instead, or if the optimizer prefers a different
-operator or join order, the hint might not be respected.
-Therefore, it is best to also specify the join order if an operator hint must be used.
-
-In addition to plan-related hints, pg_lab also provides a `Config` hint to customize the behavior of the hinting extension
-itself. Currently, the following settings can be supplied:
-
-- `plan_mode = anchored | full`. _Anchored_ plan mode is the default. It means that the hints, e.g. regarding operators, only
-  affect their corresponding intermediates. For all other intermediates the optimizer is free to make its own decisions. For
-  example, this means that the optimizer can insert memoize and materialize nodes as it sees fit. In contrast, the _full_ plan
-  mode only allows such nodes if they are hinted, i.e. memoize and materialize are implicitly disabled whenever no hint exists.
-
-The syntax for `Config` is as follows: `Config(<setting 1>; <setting 2>; ...)`, e.g. `Config(plan_mode = full)`.
+See the [Hinting](docs/hinting.md) documentation for more details on the hinting system and how to use it.
 
 
-### Custom Postgres optimizer extensions
+## 🤬 Issues
 
-TODO
-
-## Supported Postgres versions
-
-Currently, pg_lab only supports Postgres v16 and v17.
-
-
-## Modifications
-
-pg_lab uses three fundamental patterns to change the Postgres source code:
-
-1. Moving static methods into the public API. This enables the hinting system to use such methods to create appropriate access
-   paths. For example, the function to add nested-loop join paths `try_nestloop_path` is no longer static and prototype
-2. Introducing new extension hooks to control existing functionality. For example, the cost model has been refactored to
-   support new estimation functions. These refactorings all follow the same general pattern:
-
-   For an existing function, a new hook type with the same signature (return type and parameters) is introduced. For example,
-   the function `void cost_seqscan(Path*, PlannerInfo*, RelOptInfo*, ParamPathInfo*)` received a `cost_seqscan_hook_type` as
-   `void (*cost_seqscan_hook_type) (Path*, PlanenrInfo*, RelOptInfo, ParamPathInfo*)`. An instance of this hook is added,
-   defaulting to a `NULL` pointer: `cost_seqscan_hook_type cost_seqscan_hook = NULL`. The default implementation of
-   `cost_seqscan` is moved into a new function `standard_cost_seqscan`, whose prototype is publicly available. The new
-   implementation of `cost_seqscan` now calls `cost_seqscan_hook` if it has been set, and delegates to `standard_cost_seqscan`
-   otherwise.
-3. Introducing new extension points without a corresponding standard implementation. This is only required for the hinting part
-   of pg_lab in order to generate and attach the hint block data at the appropriate time. More specifically, a new hook
-   `prepare_make_one_rel` has been added. This hook is called right before `make_one_rel` is executed and receives the current
-   `PlannerInfo` and `joinlist` as input.
+Something feels wrong or broken, or a part of pg_lab is poorly documented or otherwise unclear?
+Please don't hestitate to file an issue or open a pull request!
+pg_lab is not one-off software, but an ongoing research project.
+We are always happy to improve both pg_lab and its documentation and we feel that user experience (specifically,
+_your_ user experience) is a very important part of this.
 
 
-## Detailed API description
+## 🧰 Other utilities
 
-TODO
+In addition to the core functionality, pg_lab also provides a number of utilities that are aimed at making the day-to-day
+activities of optimizer research easier.
+
+Specifically, we provide an extension called **`pg_temperature`** that allows you to easily simulate real cold-start and
+hot-start scenarios for your benchmarks.
+Take a look at `extension/pg_temperature` for more details.
+
+The **[PostBOUND project](https://github.com/rbergm/PostBOUND)** is a high-level framework to rapidly implement optimizer
+prototypes in a much more high-level language (i.e. Python) and to compare different optimizer prototypes in a transparent
+and reproducible manner.
+This framework also provides a number of utilities to easily setup common benchmarks such as JOB, Stats or Stack (even
+if we might integrate them directly into pg_lab in the future).
+
+The **`cout_star`** extension implements a simplified cost model inspired by $C_{MM}$ from Leis et al.[^how-good]
+Our SIGMOD'2025 paper [^elephant] describes its design in depth.
+See the `extension/cout_star` directory for the source code and installation instructions.
+
+[^how-good]: Leis et al.: _How Good Are Query Optimizers, Really?_ (VLDB'2015) [🔗 Link](https://www.vldb.org/pvldb/vol9/p204-leis.pdf)
+
+[^elephant]: Bergmann et al.: _An Elephant Under The Microscope_ (SIGMOD'2025) [🔗 Link](https://dl.acm.org/doi/10.1145/3709659)
 
 
-## Limitations
+## 🫶 Reference
 
-TODO
+If you find our work useful, please cite the following paper:
+
+```bibtex
+@inproceedings{bergmann2025elephant,
+  author       = {Rico Bergmann and
+                  Claudio Hartmann and
+                  Dirk Habich and
+                  Wolfgang Lehner},
+  title        = {An Elephant Under the Microscope: Analyzing the Interaction of Optimizer
+                  Components in PostgreSQL},
+  journal      = {Proc. {ACM} Manag. Data},
+  volume       = {3},
+  number       = {1},
+  pages        = {9:1--9:28},
+  year         = {2025},
+  url          = {https://doi.org/10.1145/3709659},
+  doi          = {10.1145/3709659},
+  timestamp    = {Tue, 01 Apr 2025 19:03:19 +0200},
+  biburl       = {https://dblp.org/rec/journals/pacmmod/BergmannHHL25.bib},
+  bibsource    = {dblp computer science bibliography, https://dblp.org}
+}
+```
