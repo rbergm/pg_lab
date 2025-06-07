@@ -36,11 +36,14 @@ pg_lab provides the following extension points:
 
 | EP | Location | Description |
 |----|----------|-------------|
-| `set_baserel_size_estimates_hook` | _cost.h_ | Sets a custom cardinality estimate on a base relation |
-| `set_joinrel_size_estimates_hook` | _cost.h_ | Sets a custom cardinality estimate for a join relation |
-| `compute_parallel_worker_hook` | _paths.h_ | Sets the number of parallel workers that _would_ be used if the relation should be scanned in parallel |
-| `cost_XXX_hook` | _cost.h_ | Sets the estimated cost for a specific operator, e.g. `cost_seqscan_hook` |
-| `prepare_make_one_rel_hook` | _planmain.h_ | Callback for plugins to perform initializations before the main initialization starts.
+| [🔗](#cardinality-estimation-hooks) `set_baserel_size_estimates_hook` | _cost.h_ | Sets a custom cardinality estimate on a base relation |
+| [🔗](#cardinality-estimation-hooks) `set_joinrel_size_estimates_hook` | _cost.h_ | Sets a custom cardinality estimate for a join relation |
+| [🔗](#parallel-worker-hook) `compute_parallel_worker_hook` | _paths.h_ | Sets the number of parallel workers that _would_ be used if the relation should be scanned in parallel |
+| [🔗](#cost-estimation-hooks) `cost_XXX_hook` | _cost.h_ | Sets the estimated cost for a specific operator, e.g. `cost_seqscan_hook` |
+| [🔗](#make_one_rel-callback) `prepare_make_one_rel_callback` | _planmain.h_ | Callback for plugins to perform initializations before the main initialization starts.
+| [🔗](#cheapest-path-callback) `final_path_callback` | _planner.h_ | Callback for plugins to perform post-processing after the final path has been selected. |
+| [🔗](#path-storage-and-pruning) `add_path_hook` | _pathnode.h_ | Modifies pruning and acceptance criteria for new paths. |
+| [🔗](#join-rel-creation) `make_join_rel_hook` | _pahts.h_ | Modifies the creation of _RelOptInfos_ for new join relations. | 
 
 
 ### Cardinality estimation hooks
@@ -60,7 +63,7 @@ double set_joinrel_size_estimates(PlannerInfo *root, RelOptInfo *join_rel,
 (parameters similar to `set_joinrel_size_estimates()`)
 
 Notice that both hook methods provide the estimated cardinality as the return value, rather than directly setting it on the
-RelOptInfo.
+_RelOptInfo_.
 The reason is that the vanilla methods perform additional post-processing such as clamping the estimation to the allowed
 range.
 
@@ -264,11 +267,11 @@ process also operates on part of the input (in addition to gathering the results
   might be used.
 
 
-### `make_one_rel` hook
+### `make_one_rel` callback
 
 **Interface:** 
 ```c
-void make_one_rel_hook(RelOptInfo *root, List *joinlist)
+void prepare_make_one_rel_callback(RelOptInfo *root, List *joinlist);
 ```
 (parameters similar to `make_one_rel()`)
 
@@ -277,20 +280,78 @@ Instead, it enables completely new behavior.
 Its main purpose is for extensions to perform its own initialization just before the actual optimization starts, but after
 all vanilla Postgres data structures have been initialized.
 
-More specifically, when `make_one_rel_hook` is called, the `PlannerInfo` is completely initialized, but the `RelOptInfo`s
-for the base relations have not yet been computed.
+More specifically, when `prepare_make_one_rel_callback` is called, the `PlannerInfo` is completely initialized, but the
+_RelOptInfos_ for the base relations have not yet been computed.
 This differs from the `join_search_hook` which is called with a list of readily available base rels.
 
 After the hook terminates, the optimizer proceeds with `make_one_rel` to compute the query plan. 
 
 
-## Additional modifications
+### Cheapest path callback
+
+**Interface:**
+```c
+Path* final_path_callback(PlannerInfo *root, RelOptInfo *upper_rel, Path *best_path);
+```
+
+Similar to the [`prepare_make_one_rel_callback`](#make_one_rel-callback), this callback hook enables extensions to perform
+post-processing tasks once the final execution path has been selected by the optimizer.
+The hook provides the planner data, the _RelOptInfo_ that belongs to the selected path and the selected path.
+
+While extensions are free to select a different path for execution and return it, the most common use-case is to just
+return the `best_path` from the extension and use the callback for post-processing.
+For example, the hinting extension of pg_lab uses the hook to check, whether the final path actually matches the selected
+hints.
+
+
+### Join rel creation
+
+**Interface:**
+```c
+RelOptInfo* make_join_rel_hook(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2);
+```
+
+This hook allows extensions to change the creation of new _RelOptInfos_ for joins.
+This includes inflating the _pathlist_ and *partial_pathlist* of the joins.
+It can invoke `standard_make_join_rel()` to execute the default logic and make use of the `pglab_private` field on the
+join relation to attach arbitrary data.
+The _RelOptInfo_ parameters are the intermediates that should be joined together.
+
+
+### Path storage and pruning
+
+**Interface:**
+```c
+void add_path_hook(RelOptInfo *parent_rel, Path *new_path);
+
+void add_partial_path_hook(RelOptInfo *parent_rel, Path *new_path);
+```
+
+These hooks take control whenever the Postgres optimizer has created a new access paths and needs to determine whether
+this access path is worthwhile to keep around, or whether it can be ignored.
+In the former case, the path needs to be added to the _pathlist_ or *partial_pathlist*, respectively, while in the latter
+case the path should be _pfree()'d_[^path-pfree]. 
+The _standard_-counterparts of these functions also perform pruning of dominated paths, so extensions are welcome to do the
+same.
+
+[^path-pfree]: the current optimizer implementation _pfree()'s_ all dominated paths except for index paths since these
+  might be referenced in bitmap paths.
+
+
+## Extension data
 
 To make the life of extension developers easier, pg_lab also adds two additional fields called `pglab_private` to the
-`Path` and `RelOptInfo` structs.
+`Path` and _RelOptInfo_ structs.
 Similar to `join_search_private` in `PlannerInfo`, these are simple `void *` pointers which allow developers to store
 arbitrary data for their extensions.
 
+
+## Introspection
+
 For a nicer debugging experience, pg_lab also defines the global `current_planner_type` and `current_join_ordering_type`
-variables. Both are pointers to strings that should be set by extensions that use the corresponding hooks.
-The purpose of these variables is to get 
+variables. Both are pointers to strings that can be set by extensions that use the corresponding hooks.
+The purpose of these variables is to enable some basic introspection of the activated extension hooks.
+Their current values are integrated into the `EXPLAIN` output.
+For example, pg_lab uses the `current_join_ordering_type` to indicate whether GEQO was used for the join order (and
+therefore a non-deterministic plan was created).
+Note that hooks added by pg_lab are not included in this feature since they are not standardized.
