@@ -177,7 +177,7 @@ imdb-# SELECT count(*) FROM title t JOIN movie_info mi ON t.id = mi.movie_id;
 In the first example, the best sequential plan is selected, whereas the second example uses the cheapest parallel plan
 (which in this case is estimated to be much better than the sequential one).
 
-> [!note]
+> [!NOTE]
 > `parallel` does not control which part of the query plan is being parallelized.
 > This has to be customized via [operator-level hints](#operator-level-hints).
 > Using operator-level hints implies parallel execution and overwrites the *exec_mode*.
@@ -362,8 +362,8 @@ The latter is due to the fact that Postgres uses a left-deep execution model.
 However, the hint does not restrict the operators that should be used to compute the intermediates.
 This is done using [operator-level hints](#operator-level-hints).
 
-> [!info]
-> Notice that in contrast to the operator-level hints, intermediates for the join order hint always require braces.
+> [!NOTE]
+> In contrast to the operator-level hints, intermediates for the join order hint always require braces.
 > This is necessary to encode the correct join hierarchy.
 
 Using appropriate nesting, the join order hint can be used to enforce bushy plans.
@@ -482,9 +482,16 @@ imdb-# /*=pg_lab=
          Memoize(mi)
          IdxScan(mi)
         */
-imdb-# SELECT * FROM title t JOIN movie_info mi ON t.id = mi.movie_id
+imdb-# SELECT * FROM title t JOIN movie_info mi ON t.id = mi.movie_id;
 
-TODO
+                                          QUERY PLAN                                           
+-----------------------------------------------------------------------------------------------
+ Gather  (cost=1000.44..6788675.95 rows=25008014 width=168)
+   Workers Planned: 2
+   ->  Nested Loop  (cost=0.44..4286874.55 rows=10420006 width=168)
+         ->  Parallel Seq Scan on title t  (cost=0.00..87617.68 rows=1973768 width=94)
+         ->  Index Scan using mi_movie_id on movie_info mi  (cost=0.44..1.61 rows=52 width=74)
+               Index Cond: (movie_id = t.id)
 ```
 
 Postgres does not implement the dynamic programming-based plan search in the puristic textbook sense.
@@ -501,15 +508,26 @@ Therefore, the resulting plan will not match the hints.
 To a lesser extent, the same issue appears when using the other operator hints: if Postgres selects a different join order
 and the intermediate is not used, the operator cannot be enforced:
 
-```sql
-/*=pg_lab=
-  JoinOrder(((mi ci) t))
-  NestLoop(mi t)
- */
-SELECT *
-FROM title t
-JOIN movie_info mi ON t.id = mi.movie_id
-JOIN cast_info ci ON t.id = ci.movie_id
+```
+imdb=# EXPLAIN /*=pg_lab= JoinOrder(((mi ci) t)) NestLoop(mi t) */
+imdb-# SELECT * FROM title t
+imdb-# JOIN movie_info mi ON t.id = mi.movie_id
+imdb-# JOIN cast_info ci ON t.id = ci.movie_id;
+
+                                            QUERY PLAN                                            
+--------------------------------------------------------------------------------------------------
+ Merge Join  (cost=22102162.86..45638824.47 rows=335221405 width=210)
+   Merge Cond: (mi.movie_id = t.id)
+   ->  Merge Join  (cost=22101614.92..34946020.83 rows=837376828 width=116)
+         Merge Cond: (mi.movie_id = ci.movie_id)
+         ->  Sort  (cost=6932205.29..6994725.33 rows=25008014 width=74)
+               Sort Key: mi.movie_id
+               ->  Seq Scan on movie_info mi  (cost=0.00..525642.14 rows=25008014 width=74)
+         ->  Materialize  (cost=15169405.91..15486895.71 rows=63497960 width=42)
+               ->  Sort  (cost=15169405.91..15328150.81 rows=63497960 width=42)
+                     Sort Key: ci.movie_id
+                     ->  Seq Scan on cast_info ci  (cost=0.00..1080080.60 rows=63497960 width=42)
+   ->  Index Scan using title_pkey on title t  (cost=0.43..214033.31 rows=4737042 width=94)
 ```
 
 In this example, the join between _mi_ and _t_ is never performed. Hence, the nested-loop hint is ignored.
@@ -522,7 +540,6 @@ imdb=# EXPLAIN /*=pg_lab= IdxScan(t) */ SELECT * FROM title;
                             QUERY PLAN                             
 -------------------------------------------------------------------
  Seq Scan on title t  (cost=0.00..115250.42 rows=4737042 width=94)
-(1 row)
 ```
 
 ### Join Order shenanigans
@@ -543,11 +560,13 @@ This means that unknown hints or hints that do not match the expected syntax are
 
 For example, the following hint block will simply not do anything (the correct hint would have been `SeqScan`):
 
-```sql
-/*=pg_lab=
-    SequentialScan(t)
- */
-SELECT * FROM title t WHERE t.id < 42;
+```
+imdb=# EXPLAIN /*=pg_lab= SequentialScan(t) */ SELECT * FROM title t WHERE t.id < 42;
+
+                                 QUERY PLAN                                 
+----------------------------------------------------------------------------
+ Index Scan using title_pkey on title t  (cost=0.43..9.29 rows=41 width=94)
+   Index Cond: (id < 42)
 ```
 
 We plan to improve the error behavior at some point, but for now the user is responsible for checking whether all features
