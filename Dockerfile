@@ -39,9 +39,9 @@ USER $USERNAME
 
 RUN git clone --depth 1 --branch=feature/parallel-hints https://github.com/rbergm/pg_lab /pg_lab ; \
     if [ "$DEBUG" = "true" ]; then \
-        ./postgres-setup.sh --stop --pg-ver ${PGVER} --debug ; \
+        ./postgres-setup.sh --stop --pg-ver ${PGVER} --debug --remote-password ${USERNAME} ; \
     else \
-        ./postgres-setup.sh --stop --pg-ver ${PGVER} ; \
+        ./postgres-setup.sh --stop --pg-ver ${PGVER} --remote-password ${USERNAME} ; \
     fi
 
 CMD ["/pg_lab/tools/docker-entrypoint.sh"]
