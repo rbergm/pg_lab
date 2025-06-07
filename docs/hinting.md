@@ -15,7 +15,7 @@ WHERE t.production_year >= 2005
 ```
 
 All contents betwen `/*=pg_lab=` (the hint prefix) and `*/` (the hint suffix) are parsed as potential hint blocks.
-The hint block can be placed at an arbitary point in the query (e.g. also after the `SELECT`).
+The hint block can be placed at an arbitary point in the query (e.g. after the `SELECT`).
 Please note, that the hint detection is currently rather primitive and pg_lab only performs a (context-free) substring
 search for `/*=pg_lab=` and `*/` to find the hint block.
 This is because comments are stripped from the query AST and we simply did not have the resources nor the knowledge to
@@ -30,6 +30,10 @@ When you install pg_lab through the `postgres-setup.sh` script, the hinting exte
 added to the _preload libraries_.
 If you decide to build pg_lab on your own, make sure to also setup the hinting extension (see `extensions/pg_lab` for
 details).
+
+When pg_lab detects a hint block, it will check whether the final execution plan is compatible with all hints.
+If this should not be the case (due to the [Limitations](#hint-enforcement)), an error will be raised.
+This behavior can be disabled by setting `pg_lab.check_final_path` to _off_.
 
 
 ## Hint List
@@ -79,34 +83,53 @@ exec_mode ::= exec_mode = default | sequential | parallel
 
 Each setting follows the structure of `setting name = setting value` and multiple settings are separated by semicolons.
 
-The *planner mode* changes how intermediate hints (and their absence) should impact the selected plans.
+The **planner mode** changes how intermediate hints (and their absence) should impact the selected plans.
 Currently, this affects materialization and memoization operators in two different modes:
 
 - `anchored`: In _anchored_ mode, pg_lab only enforces hints that it sees, but the optimizer is free to "fill the gaps"
   as it sees fit. For example, the optimizer can insert additional memoization operators before a nested-loop join.
   Notice, that this does not influence the behaviour of explicit `Memoize` or `Material` hints. If those are present,
   pg_lab will always enforce them (but see [Limitations](#hint-enforcement)).
-- `full`: In _full_ mode, pg_lab the absence of an intermediate hint is treated as disabling the hint.
+- `full`: In _full_ mode, the absence of an intermediate hint is treated as disabling the hint.
   E.g., if the user did not explicitly specify materialization for an intermediate, this intermediate will not be
   materialized in the selected plan.
 
 Compare the following queries:
 
 ```
-imdb=# EXPLAIN /*=pg_lab= Config(plan_mode=anchored) JoinOrder((t mi)) NestLoop(t mi) SeqScan(t) IdxScan(mi) */
-imdb-# SELECT * FROM title t JOIN movie_info mi ON t.id = mi.movie_info WHERE t.production_year < 1930;
+imdb=# EXPLAIN /*=pg_lab= Config(plan_mode=anchored) NestLoop(t mi) SeqScan(mi) */
+imdb-# SELECT * FROM title t JOIN movie_info mi ON t.id = mi.movie_id WHERE t.production_year < 1930;
 
-TODO
+                                          QUERY PLAN                                           
+-----------------------------------------------------------------------------------------------
+ Gather  (cost=1000.44..5234008.65 rows=703856 width=168)
+   Workers Planned: 2
+   ->  Nested Loop  (cost=0.44..5162623.05 rows=293273 width=168)
+         ->  Parallel Seq Scan on movie_info mi  (cost=0.00..379762.06 rows=10420006 width=74)
+         ->  Memoize  (cost=0.44..0.48 rows=1 width=94)
+               Cache Key: mi.movie_id
+               Cache Mode: logical
+               ->  Index Scan using title_pkey on title t  (cost=0.43..0.47 rows=1 width=94)
+                     Index Cond: (id = mi.movie_id)
+                     Filter: (production_year < 1930)
 ```
 
 Here, the optimizer decided to insert an additional memoize-operator after scanning *movie_info*.
 In contrast, 
 
 ```
-imdb=# EXPLAIN /*=pg_lab= Config(plan_mode=full) JoinOrder((t mi)) NestLoop(t mi) SeqScan(t) IdxScan(mi) */
+imdb=# EXPLAIN /*=pg_lab= Config(plan_mode=full) NestLoop(t mi) SeqScan(mi) */
 imdb-# SELECT * FROM title t JOIN movie_info mi ON t.id = mi.movie_info WHERE t.production_year < 1930;
 
-TODO
+                                          QUERY PLAN                                           
+-----------------------------------------------------------------------------------------------
+ Gather  (cost=1000.43..5308186.98 rows=703856 width=168)
+   Workers Planned: 2
+   ->  Nested Loop  (cost=0.43..5236801.38 rows=293273 width=168)
+         ->  Parallel Seq Scan on movie_info mi  (cost=0.00..379762.06 rows=10420006 width=74)
+         ->  Index Scan using title_pkey on title t  (cost=0.43..0.47 rows=1 width=94)
+               Index Cond: (id = mi.movie_id)
+               Filter: (production_year < 1930)
 ```
 
 does not use the memo node. This is because the absence of the `Memo` hint told the optimizer to not use the operator.
@@ -123,7 +146,13 @@ For example, consider
 imdb=# EXPLAIN /*=pg_lab= Config(exec_mode=sequential) */
 imdb-# SELECT count(*) FROM title t JOIN movie_info mi ON t.id = mi.movie_id;
 
-TODO
+                                                  QUERY PLAN                                                  
+--------------------------------------------------------------------------------------------------------------
+ Aggregate  (cost=1031737.16..1031737.17 rows=1 width=8)
+   ->  Merge Join  (cost=21.67..969217.12 rows=25008014 width=0)
+         Merge Cond: (t.id = mi.movie_id)
+         ->  Index Only Scan using title_pkey on title t  (cost=0.43..140304.06 rows=4737042 width=4)
+         ->  Index Only Scan using mi_movie_id on movie_info mi  (cost=0.44..504660.65 rows=25008014 width=4)
 ```
 
 compared to
@@ -132,7 +161,17 @@ compared to
 imdb=# EXPLAIN /*=pg_lab= Config(exec_mode=parallel) */
 imdb-# SELECT count(*) FROM title t JOIN movie_info mi ON t.id = mi.movie_id;
 
-TODO
+                                                            QUERY PLAN                                                             
+-----------------------------------------------------------------------------------------------------------------------------------
+ Finalize Aggregate  (cost=622303.11..622303.12 rows=1 width=8)
+   ->  Gather  (cost=622302.89..622303.10 rows=2 width=8)
+         Workers Planned: 2
+         ->  Partial Aggregate  (cost=621302.89..621302.90 rows=1 width=8)
+               ->  Parallel Hash Join  (cost=120001.21..595252.88 rows=10420006 width=0)
+                     Hash Cond: (mi.movie_id = t.id)
+                     ->  Parallel Index Only Scan using mi_movie_id on movie_info mi  (cost=0.44..358780.57 rows=10420006 width=4)
+                     ->  Parallel Hash  (cost=87617.68..87617.68 rows=1973768 width=4)
+                           ->  Parallel Seq Scan on title t  (cost=0.00..87617.68 rows=1973768 width=4)
 ```
 
 In the first example, the best sequential plan is selected, whereas the second example uses the cheapest parallel plan
@@ -161,19 +200,24 @@ In contrast to [pg_hint_plan](https://github.com/ossc-db/pg_hint_plan), pg_lab s
 relations as well as base tables. Therefore, `Card(t #42)` is completely valid hint in pg_lab.
 
 The cardinality is interpreted as the size of the specific intermediate after all applicable filters have been applied.
-Therefore, it does change the selectivity of a filter:
 
 ```
 imdb=# EXPLAIN /*=pg_lab= Card(t #4200000) */ SELECT * FROM title t WHERE t.production_year > 2010;
 
-TODO
+                                   QUERY PLAN                                    
+---------------------------------------------------------------------------------
+ Seq Scan on title t  (cost=0.00..127093.02 rows=4200000 width=94)
+   Filter: (production_year > 2010)
 
-imdb=# EXPLAIN /*=pg_lab? Card(t #42) */ SELECT * FROM title t WHERE t.production_year > 2010;
+imdb=# EXPLAIN /*=pg_lab= Card(t #42) */ SELECT * FROM title t WHERE t.production_year > 2010;
 
-TODO
+                                 QUERY PLAN                                 
+----------------------------------------------------------------------------
+ Gather  (cost=1000.00..93556.29 rows=42 width=94)
+   Workers Planned: 2
+   ->  Parallel Seq Scan on title t  (cost=0.00..92552.09 rows=18 width=94)
+         Filter: (production_year > 2010)
 ```
-
-Both hints produce the exact same query plan.
 
 ### Operator-level hints
 
@@ -256,7 +300,17 @@ any operator hint like `MergeJoin(t mi (workers=12))` would indicate that the me
 imdb=# EXPLAIN /*=pg_lab= MergeJoin(t mi (workers=12)) */
 imdb-# SELECT count(*) FROM title t JOIN movie_info mi ON t.id = mi.movie_id
 
-TODO
+                                                         QUERY PLAN                                                         
+----------------------------------------------------------------------------------------------------------------------------
+ Aggregate  (cost=3659465.64..3659465.65 rows=1 width=8)
+   ->  Gather  (cost=771028.77..3596945.60 rows=25008014 width=0)
+         Workers Planned: 12
+         ->  Merge Join  (cost=770028.77..1095144.20 rows=2084001 width=0)
+               Merge Cond: (mi.movie_id = t.id)
+               ->  Parallel Index Only Scan using mi_movie_id on movie_info mi  (cost=0.44..275420.52 rows=2084001 width=4)
+               ->  Sort  (cost=770018.10..781860.70 rows=4737042 width=4)
+                     Sort Key: t.id
+                     ->  Seq Scan on title t  (cost=0.00..115250.42 rows=4737042 width=4)
 ```
 
 This forces Postgres to introduce a gather node after the join to collect the results from all workers.
@@ -270,7 +324,18 @@ aggregation can be included in the parallel portion:
 imdb=# EXPLAIN /*=pg_lab= Result(workers=12) MergeJoin(t mi) */
 imdb-# SELECT count(*) FROM title t JOIN movie_info mi ON t.id = mi.movie_id
 
-TODO
+                                                            QUERY PLAN                                                            
+----------------------------------------------------------------------------------------------------------------------------------
+ Finalize Aggregate  (cost=1101355.45..1101355.46 rows=1 width=8)
+   ->  Gather  (cost=1101354.21..1101355.42 rows=12 width=8)
+         Workers Planned: 12
+         ->  Partial Aggregate  (cost=1100354.21..1100354.22 rows=1 width=8)
+               ->  Merge Join  (cost=770028.77..1095144.20 rows=2084001 width=0)
+                     Merge Cond: (mi.movie_id = t.id)
+                     ->  Parallel Index Only Scan using mi_movie_id on movie_info mi  (cost=0.44..275420.52 rows=2084001 width=4)
+                     ->  Sort  (cost=770018.10..781860.70 rows=4737042 width=4)
+                           Sort Key: t.id
+                           ->  Seq Scan on title t  (cost=0.00..115250.42 rows=4737042 width=4)
 ```
 
 Notice that it is currently not possible to specify which part of the join post-processing is parallelized.
@@ -301,15 +366,56 @@ This is done using [operator-level hints](#operator-level-hints).
 > Notice that in contrast to the operator-level hints, intermediates for the join order hint always require braces.
 > This is necessary to encode the correct join hierarchy.
 
-Using appropriate nesting, the join order hint can be used to enforce bushy plans:
+Using appropriate nesting, the join order hint can be used to enforce bushy plans.
+Compare
 
 ```
-imdb=# EXPLAIN /*=pg_lab= JoinOrder((ci (t mi))) */
-imdb-# TODO
+imdb=# EXPLAIN /*=pg_lab= JoinOrder((ci (t mi))) */  -- bushy plan
+imdb-# SELECT count(*)
+imdb-# FROM title t JOIN movie_info mi ON t.id = mi.movie_id JOIN cast_info ci ON t.id = ci.movie_id
+imdb-# WHERE t.production_year > 2000;
 
-TODO
+                                                              QUERY PLAN                                                              
+--------------------------------------------------------------------------------------------------------------------------------------
+ Finalize Aggregate  (cost=2772595.00..2772595.01 rows=1 width=8)
+   ->  Gather  (cost=2772594.79..2772595.00 rows=2 width=8)
+         Workers Planned: 2
+         ->  Partial Aggregate  (cost=2771594.79..2771594.80 rows=1 width=8)
+               ->  Parallel Hash Join  (cost=937091.30..2548659.56 rows=89174092 width=0)
+                     Hash Cond: (ci.movie_id = t.id)
+                     ->  Parallel Seq Scan on cast_info ci  (cost=0.00..709675.83 rows=26457483 width=4)
+                     ->  Parallel Hash  (cost=827947.80..827947.80 rows=6652520 width=8)
+                           ->  Merge Join  (cost=21.67..827947.80 rows=6652520 width=8)
+                                 Merge Cond: (t.id = mi.movie_id)
+                                 ->  Parallel Index Scan using title_pkey on title t  (cost=0.43..191334.98 rows=1260127 width=4)
+                                       Filter: (production_year > 2000)
+                                 ->  Index Only Scan using mi_movie_id on movie_info mi  (cost=0.44..504660.65 rows=25008014 width=4)
 ```
 
+to
+
+```
+imdb=# EXPLAIN /*=pg_lab= JoinOrder(((t mi) ci)) */ -- normal left-deep plan
+imdb-# SELECT count(*)
+imdb-# FROM title t JOIN movie_info mi ON t.id = mi.movie_id JOIN cast_info ci ON t.id = ci.movie_id
+imdb-# WHERE t.production_year > 2000;
+
+                                                           QUERY PLAN                                                           
+--------------------------------------------------------------------------------------------------------------------------------
+ Finalize Aggregate  (cost=2955348.55..2955348.56 rows=1 width=8)
+   ->  Gather  (cost=2955348.34..2955348.55 rows=2 width=8)
+         Workers Planned: 2
+         ->  Partial Aggregate  (cost=2954348.34..2954348.35 rows=1 width=8)
+               ->  Parallel Hash Join  (cost=1143766.04..2731413.11 rows=89174092 width=0)
+                     Hash Cond: (t.id = ci.movie_id)
+                     ->  Merge Join  (cost=21.67..827947.80 rows=6652520 width=8)
+                           Merge Cond: (t.id = mi.movie_id)
+                           ->  Parallel Index Scan using title_pkey on title t  (cost=0.43..191334.98 rows=1260127 width=4)
+                                 Filter: (production_year > 2000)
+                           ->  Index Only Scan using mi_movie_id on movie_info mi  (cost=0.44..504660.65 rows=25008014 width=4)
+                     ->  Parallel Hash  (cost=709675.83..709675.83 rows=26457483 width=4)
+                           ->  Parallel Seq Scan on cast_info ci  (cost=0.00..709675.83 rows=26457483 width=4)
+```
 
 ## Parallel plans
 
@@ -339,7 +445,9 @@ These limitations are outlined below.
 
 ### Supported planner features
 
-Hints currently 
+pg_lab is currently only tested on SPJ-ish queries that do not contain subqueries, CTEs or other features that generate
+relations from non-base table sources (e.g. views or table-returning UDFs).
+Some queries with such features might work by accident, but it might just as well crash and burn (and probably will).
 
 ### Hint enforcement
 
@@ -410,6 +518,7 @@ Likewise, the following does not work because Postgres never considers index pat
 
 ```
 imdb=# EXPLAIN /*=pg_lab= IdxScan(t) */ SELECT * FROM title;
+
                             QUERY PLAN                             
 -------------------------------------------------------------------
  Seq Scan on title t  (cost=0.00..115250.42 rows=4737042 width=94)
