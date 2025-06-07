@@ -22,8 +22,9 @@ set(PG_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../pg-build/pg-17" CACHE PATH
 message(STATUS "Using PostgreSQL server path: ${PG_INSTALL_DIR}")
 
 
-set(PGLAB_TRACE CACHE BOOL "Enable tracing of the hinting extension" OFF)
+set(PGLAB_TRACE OFF CACHE BOOL "Enable tracing of the hinting extension")
 if (PGLAB_TRACE)
+    message(STATUS "Enabling tracing")
     add_compile_definitions(PGLAB_TRACE)
 endif()
 
