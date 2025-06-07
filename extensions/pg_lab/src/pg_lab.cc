@@ -45,8 +45,11 @@ extern "C" {
     extern planner_hook_type planner_hook;
     static planner_hook_type prev_planner_hook = NULL;
 
-    extern prepare_make_one_rel_hook_type prepare_make_one_rel_hook;
-    static prepare_make_one_rel_hook_type prev_prepare_make_one_rel_hook = NULL;
+    extern prepare_make_one_rel_callback_type prepare_make_one_rel_callback;
+    static prepare_make_one_rel_callback_type prev_prepare_make_one_rel_hook = NULL;
+
+    extern final_path_callback_type final_path_callback;
+    static final_path_callback_type prev_final_path_callback = NULL;
 
     extern join_search_hook_type join_search_hook;
     static join_search_hook_type prev_join_search_hook = NULL;
@@ -132,6 +135,7 @@ extern "C" {
 }
 
 static bool enable_pglab = true;
+static bool pglab_check_final_path = true;
 
 /* Stores the raw query that is currently being optimized in this backend. */
 char *current_query_string = NULL;
@@ -144,108 +148,6 @@ static PlannerInfo  *current_planner_root = NULL;
 
 /* The hints that are available for the current query. */
 static PlannerHints *current_hints = NULL;
-
-
-/*
- * Our custom planner hook is required because this is the last point during the Postgres planning phase where the raw query
- * string is available. Everywhere down the line, only the parsed Query* node is available. However, the Query* does not
- * contain any comments and hence, no hints.
- *
- * Sadly, in the planner entry point the PlannerInfo is not yet available, so we can only export the raw query string and
- * need to delegate the actual parsing of the hints to the pg_lab-specific make_one_rel_prep() hook.
- */
-extern "C" PlannedStmt *
-hint_aware_planner(Query* parse, const char* query_string, int cursorOptions, ParamListInfo boundParams)
-{
-    PlannedStmt *result;
-
-    current_hints        = NULL;
-    current_planner_root = NULL;
-    current_query_string = (char*) query_string;
-
-    if (prev_planner_hook)
-    {
-        current_planner_type = &PLANNER_TYPE_CUSTOM;
-        result = prev_planner_hook(parse, query_string, cursorOptions, boundParams);
-    }
-    else
-    {
-        current_planner_type = &PLANNER_TYPE_DEFAULT;
-        result = standard_planner(parse, query_string, cursorOptions, boundParams);
-    }
-
-    /* we let the context-based memory manager of PG take care of properly freeing our stuff */
-    current_hints        = NULL;
-    current_planner_root = NULL;
-    current_query_string = NULL;
-
-    return result;
-}
-
-/*
- * The make_one_rel_prep() hook is called before the actual planning starts. We use it to extract the hints from our raw
- * query string.
- */
-extern "C" void
-hint_aware_make_one_rel_prep(PlannerInfo *root, List *joinlist)
-{
-    PlannerHints *hints;
-
-    if (!enable_pglab)
-    {
-        if (prev_prepare_make_one_rel_hook)
-            prev_prepare_make_one_rel_hook(root, joinlist);
-        return;
-    }
-
-    hints = init_hints(current_query_string);
-    parse_hint_block(root, hints);
-    post_process_hint_block(hints);
-
-    if (prev_prepare_make_one_rel_hook)
-        prev_prepare_make_one_rel_hook(root, joinlist);
-
-    current_planner_root = root;
-    current_hints = hints;
-}
-
-/*
- * We need a custom hook for the add_path_precheck(), because the original function is used to skip access paths if they are
- * definitely not useful (at least according to the native cost model). We need to overwrite this behavior to enforce our
- * current hints.
- */
-extern "C" bool
-hint_aware_add_path_precheck(RelOptInfo *parent_rel, Cost startup_cost, Cost total_cost,
-                             List *pathkeys, Relids required_outer)
-{
-    if (current_hints && (current_hints->join_order_hint || current_hints->operator_hints))
-        /* XXX: we could be smarter and try to check, whether there actually is a hint concerning the current path */
-        return true;
-
-    if (prev_add_path_precheck_hook)
-        return (*prev_add_path_precheck_hook)(parent_rel, startup_cost, total_cost, pathkeys, required_outer);
-    else
-        return standard_add_path_precheck(parent_rel, startup_cost, total_cost, pathkeys, required_outer);
-}
-
-/*
- * We need a custom hook for the add_partial_path_precheck(), because the original function is used to skip access paths if
- * they are definitely not useful (at least according to the native cost model). We need to overwrite this behavior to enforce
- * our current hints.
- */
-extern "C" bool
-hint_aware_add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost, List *pathkeys)
-{
-    if (current_hints && (current_hints->join_order_hint || current_hints->operator_hints))
-        /* XXX: we could be smarter and try to check, whether there actually is a hint concerning the current path */
-        return true;
-
-    if (prev_add_partial_path_precheck_hook)
-        return (*prev_add_partial_path_precheck_hook)(parent_rel, total_cost, pathkeys);
-    else
-        return standard_add_partial_path_precheck(parent_rel, total_cost, pathkeys);
-}
-
 
 /* utility macros inspired by nodeTag and IsA from nodes.h */
 #define pathTag(pathptr) (((const Path*)pathptr)->pathtype)
@@ -592,6 +494,133 @@ path_satisfies_parallelization(RelOptInfo* parent_rel, Path *par_subpath)
     }
 }
 
+/*
+ * Our custom planner hook is required because this is the last point during the Postgres planning phase where the raw query
+ * string is available. Everywhere down the line, only the parsed Query* node is available. However, the Query* does not
+ * contain any comments and hence, no hints.
+ *
+ * Sadly, in the planner entry point the PlannerInfo is not yet available, so we can only export the raw query string and
+ * need to delegate the actual parsing of the hints to the pg_lab-specific make_one_rel_prep() hook.
+ */
+extern "C" PlannedStmt *
+hint_aware_planner(Query* parse, const char* query_string, int cursorOptions, ParamListInfo boundParams)
+{
+    PlannedStmt *result;
+
+    current_hints        = NULL;
+    current_planner_root = NULL;
+    current_query_string = (char*) query_string;
+
+    if (prev_planner_hook)
+    {
+        current_planner_type = &PLANNER_TYPE_CUSTOM;
+        result = prev_planner_hook(parse, query_string, cursorOptions, boundParams);
+    }
+    else
+    {
+        current_planner_type = &PLANNER_TYPE_DEFAULT;
+        result = standard_planner(parse, query_string, cursorOptions, boundParams);
+    }
+
+    /* we let the context-based memory manager of PG take care of properly freeing our stuff */
+    current_hints        = NULL;
+    current_planner_root = NULL;
+    current_query_string = NULL;
+
+    return result;
+}
+
+/*
+ * The make_one_rel_prep() hook is called before the actual planning starts. We use it to extract the hints from our raw
+ * query string.
+ */
+extern "C" void
+hint_aware_make_one_rel_prep(PlannerInfo *root, List *joinlist)
+{
+    PlannerHints *hints;
+
+    if (!enable_pglab)
+    {
+        if (prev_prepare_make_one_rel_hook)
+            prev_prepare_make_one_rel_hook(root, joinlist);
+        return;
+    }
+
+    hints = init_hints(current_query_string);
+    parse_hint_block(root, hints);
+    post_process_hint_block(hints);
+
+    if (prev_prepare_make_one_rel_hook)
+        prev_prepare_make_one_rel_hook(root, joinlist);
+
+    current_planner_root = root;
+    current_hints = hints;
+}
+
+extern "C" Path *
+hint_aware_final_path_callback(PlannerInfo *root, RelOptInfo *rel, Path *best_path)
+{
+    if (current_hints && current_hints->contains_hint && pglab_check_final_path)
+    {
+        JoinOrder *join_order;
+        Path *par_subplan;
+        bool satisfies_hints;
+
+        join_order = current_hints->join_order_hint
+                     ? traverse_join_order(current_hints->join_order_hint, PathRelids(best_path))
+                     : NULL;
+
+        satisfies_hints = path_satisfies_hints(best_path, join_order, &par_subplan);
+        if (satisfies_hints)
+            satisfies_hints = path_satisfies_parallelization(rel, par_subplan);
+
+        if (!satisfies_hints)
+            ereport(ERROR, errmsg("pg_lab could not find a valid path that satisfies all hints"));
+    }
+
+
+    if (prev_final_path_callback)
+        best_path = (*prev_final_path_callback)(root, rel, best_path);
+
+    return best_path;
+}
+
+/*
+ * We need a custom hook for the add_path_precheck(), because the original function is used to skip access paths if they are
+ * definitely not useful (at least according to the native cost model). We need to overwrite this behavior to enforce our
+ * current hints.
+ */
+extern "C" bool
+hint_aware_add_path_precheck(RelOptInfo *parent_rel, Cost startup_cost, Cost total_cost,
+                             List *pathkeys, Relids required_outer)
+{
+    if (current_hints && (current_hints->join_order_hint || current_hints->operator_hints))
+        /* XXX: we could be smarter and try to check, whether there actually is a hint concerning the current path */
+        return true;
+
+    if (prev_add_path_precheck_hook)
+        return (*prev_add_path_precheck_hook)(parent_rel, startup_cost, total_cost, pathkeys, required_outer);
+    else
+        return standard_add_path_precheck(parent_rel, startup_cost, total_cost, pathkeys, required_outer);
+}
+
+/*
+ * We need a custom hook for the add_partial_path_precheck(), because the original function is used to skip access paths if
+ * they are definitely not useful (at least according to the native cost model). We need to overwrite this behavior to enforce
+ * our current hints.
+ */
+extern "C" bool
+hint_aware_add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost, List *pathkeys)
+{
+    if (current_hints && (current_hints->join_order_hint || current_hints->operator_hints))
+        /* XXX: we could be smarter and try to check, whether there actually is a hint concerning the current path */
+        return true;
+
+    if (prev_add_partial_path_precheck_hook)
+        return (*prev_add_partial_path_precheck_hook)(parent_rel, total_cost, pathkeys);
+    else
+        return standard_add_partial_path_precheck(parent_rel, total_cost, pathkeys);
+}
 
 /*
  * The magic sauce that makes pg_lab's hinting work.
@@ -1262,11 +1291,20 @@ _PG_init(void)
                              PGC_USERSET, 0,
                              NULL, NULL, NULL);
 
+    DefineCustomBoolVariable("pglab.check_final_path",
+                             "If enabled, checks whether the final path satisfies all hints and errors if not.", NULL,
+                             &pglab_check_final_path, true,
+                             PGC_USERSET, 0,
+                             NULL, NULL, NULL);
+
     prev_planner_hook = planner_hook;
     planner_hook = hint_aware_planner;
 
-    prev_prepare_make_one_rel_hook = prepare_make_one_rel_hook;
-    prepare_make_one_rel_hook = hint_aware_make_one_rel_prep;
+    prev_prepare_make_one_rel_hook = prepare_make_one_rel_callback;
+    prepare_make_one_rel_callback = hint_aware_make_one_rel_prep;
+
+    prev_final_path_callback = final_path_callback;
+    final_path_callback = hint_aware_final_path_callback;
 
     prev_join_search_hook = join_search_hook;
     join_search_hook = hint_aware_join_search;
@@ -1322,7 +1360,8 @@ _PG_fini(void)
 {
     /* XXX */
     planner_hook = prev_planner_hook;
-    prepare_make_one_rel_hook = prev_prepare_make_one_rel_hook;
+    prepare_make_one_rel_callback = prev_prepare_make_one_rel_hook;
+    final_path_callback = prev_final_path_callback;
     join_search_hook = prev_join_search_hook;
     set_rel_pathlist_hook = prev_rel_pathlist_hook;
     set_join_pathlist_hook = prev_join_pathlist_hook;
