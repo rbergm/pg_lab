@@ -247,7 +247,7 @@ init_hints(const char *raw_query)
     hints->raw_query = pstrdup(raw_query);
     hints->contains_hint = false;
     hints->raw_hint = NULL;
-    hints->mode = ANCHORED;
+    hints->mode = HINTMODE_ANCHORED;
     hints->parallel_mode = PARMODE_DEFAULT;
     hints->join_order_hint = NULL;
     hints->operator_hints = NULL;

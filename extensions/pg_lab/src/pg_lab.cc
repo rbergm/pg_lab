@@ -159,7 +159,9 @@ static PlannerHints *current_hints = NULL;
 #define IsAJoinPath(pathptr) (PathIsA(pathptr, NestLoop) || PathIsA(pathptr, MergeJoin) || PathIsA(pathptr, HashJoin))
 #define IsAIntermediatePath(pathptr) (PathIsA(pathptr, Memoize) || PathIsA(pathptr, Material))
 #define IsAParPath(pathptr) (PathIsA(pathptr, Gather) || PathIsA(pathptr, GatherMerge))
-#define PathRelids(pathptr) (pathptr->parent->relids)
+#define PathRelids(pathptr) (pathptr->parent->relids == NULL /* this is true for upper rels */ \
+                             ? current_planner_root->all_baserels \
+                             : pathptr->parent->relids)
 #define FreePath(pathptr) if (IsA(pathptr, IndexScan)) { pfree(pathptr); }
 
 /*
@@ -172,7 +174,7 @@ static PlannerHints *current_hints = NULL;
  * the top-level operator is correct. However, we do recurse into upper-rel related paths (gather, limit, etc).
  */
 static bool
-path_satisfies_operator(Path *path, JoinOrder *join_order)
+path_satisfies_operator(Path *path, JoinOrder *join_order, NodeTag parent_node)
 {
     Relids        relids;
     OperatorHint *op_hint;
@@ -202,20 +204,28 @@ path_satisfies_operator(Path *path, JoinOrder *join_order)
                                               &relids, HASH_FIND, &hint_found);
     }
 
-    if (!hint_found)
-        /* Nothing restricts the choice of operators, we are good to continue */
-        return true;
-
     /*
      * Materialization and memoization is handled by flags attached to the main operator hint. Therefore, we need to handle
      * them separately.
      * Afterwards, we simply switch over the hinted operator and make sure that our path is of the correct type.
      */
 
-    if (PathIsA(path, Memoize))
-        return op_hint->memoize_output;
-    else if (PathIsA(path, Material))
-        return op_hint->materialize_output;
+    if (current_hints->mode == HINTMODE_FULL)
+    {
+        if (parent_node == T_Memoize && (!op_hint || !op_hint->memoize_output))
+            return false;
+        else if (parent_node == T_Material && (!op_hint || !op_hint->materialize_output))
+            return false;
+    }
+
+    if (!hint_found)
+        /* Nothing restricts the choice of operators, we are good to continue */
+        return true;
+
+    if (op_hint->memoize_output && parent_node != T_Memoize)
+        return false;
+    else if (op_hint->materialize_output && parent_node != T_Material)
+        return false;
 
     switch (op_hint->op)
     {
@@ -253,7 +263,7 @@ path_satisfies_operator(Path *path, JoinOrder *join_order)
  * If the caller does not care about the parallel subpath, they can pass a NULL pointer.
  */
 static bool
-path_satisfies_hints(Path *path, JoinOrder *join_node, Path **par_subpath)
+path_satisfies_hints(Path *path, JoinOrder *join_node, Path **par_subpath, NodeTag parent_node)
 {
     JoinPath *jpath;
     bool inner_valid, outer_valid;
@@ -280,7 +290,7 @@ path_satisfies_hints(Path *path, JoinOrder *join_node, Path **par_subpath)
                 GatherPath *gpath = (GatherPath*) path;
                 if (par_subpath != NULL)
                     *par_subpath = gpath->subpath;
-                return path_satisfies_hints(gpath->subpath, join_node, par_subpath);
+                return path_satisfies_hints(gpath->subpath, join_node, par_subpath, T_Gather);
             }
 
             case T_GatherMerge:
@@ -288,51 +298,49 @@ path_satisfies_hints(Path *path, JoinOrder *join_node, Path **par_subpath)
                 GatherMergePath *gmpath = (GatherMergePath*) path;
                 if (par_subpath != NULL)
                     *par_subpath = gmpath->subpath;
-                return path_satisfies_hints(gmpath->subpath, join_node, par_subpath);
+                return path_satisfies_hints(gmpath->subpath, join_node, par_subpath, T_GatherMerge);
             }
 
             case T_Memoize:
             {
                 MemoizePath *mempath = (MemoizePath*) path;
-                return path_satisfies_operator(path, join_node) &&
-                       path_satisfies_hints(mempath->subpath, join_node, par_subpath);
+                return path_satisfies_hints(mempath->subpath, join_node, par_subpath, T_Memoize);
             }
 
             case T_Material:
             {
                 MaterialPath *matpath = (MaterialPath*) path;
-                return path_satisfies_operator(path, join_node) &&
-                       path_satisfies_hints(matpath->subpath, join_node, par_subpath);
+                return path_satisfies_hints(matpath->subpath, join_node, par_subpath, T_Material);
             }
 
             case T_Sort:
             {
                 SortPath *spath = (SortPath*) path;
-                return path_satisfies_hints(spath->subpath, join_node, par_subpath);
+                return path_satisfies_hints(spath->subpath, join_node, par_subpath, T_Sort);
             }
 
             case T_IncrementalSort:
             {
                 IncrementalSortPath *ispath = (IncrementalSortPath*) path;
-                return path_satisfies_hints((ispath->spath).subpath, join_node, par_subpath);
+                return path_satisfies_hints((ispath->spath).subpath, join_node, par_subpath, T_IncrementalSort);
             }
 
             case T_Group:
             {
                 GroupPath *gpath = (GroupPath*) path;
-                return path_satisfies_hints(gpath->subpath, join_node, par_subpath);
+                return path_satisfies_hints(gpath->subpath, join_node, par_subpath, T_Group);
             }
 
             case T_Agg:
             {
                 AggPath *apath = (AggPath*) path;
-                return path_satisfies_hints(apath->subpath, join_node, par_subpath);
+                return path_satisfies_hints(apath->subpath, join_node, par_subpath, T_Agg);
             }
 
             case T_Limit:
             {
                 LimitPath *lpath = (LimitPath*) path;
-                return path_satisfies_hints(lpath->subpath, join_node, par_subpath);
+                return path_satisfies_hints(lpath->subpath, join_node, par_subpath, T_Limit);
             }
 
             default:
@@ -348,7 +356,7 @@ path_satisfies_hints(Path *path, JoinOrder *join_node, Path **par_subpath)
      * Finally, for join paths we also need to recurse into the child paths.
      */
 
-    if  (!path_satisfies_operator(path, join_node))
+    if  (!path_satisfies_operator(path, join_node, parent_node))
         return false;
 
     if (!join_node)
@@ -371,8 +379,8 @@ path_satisfies_hints(Path *path, JoinOrder *join_node, Path **par_subpath)
              * compatibility at some point and for whatever reason.
              */
 
-            inner_valid = path_satisfies_hints(jpath->innerjoinpath, NULL, par_subpath);
-            outer_valid = path_satisfies_hints(jpath->outerjoinpath, NULL, par_subpath);
+            inner_valid = path_satisfies_hints(jpath->innerjoinpath, NULL, par_subpath, path->pathtype);
+            outer_valid = path_satisfies_hints(jpath->outerjoinpath, NULL, par_subpath, path->pathtype);
             return inner_valid && outer_valid;
         }
         else if (IsAScanPath(path))
@@ -399,8 +407,8 @@ path_satisfies_hints(Path *path, JoinOrder *join_node, Path **par_subpath)
     jpath = (JoinPath*) path;
 
     /* Once again we should not use the shortcut syntax here, see comment above. */
-    inner_valid = path_satisfies_hints(jpath->innerjoinpath, join_node->inner_child, par_subpath);
-    outer_valid = path_satisfies_hints(jpath->outerjoinpath, join_node->outer_child, par_subpath);
+    inner_valid = path_satisfies_hints(jpath->innerjoinpath, join_node->inner_child, par_subpath, path->pathtype);
+    outer_valid = path_satisfies_hints(jpath->outerjoinpath, join_node->outer_child, par_subpath, path->pathtype);
     return inner_valid && outer_valid;
 }
 
@@ -494,6 +502,28 @@ path_satisfies_parallelization(RelOptInfo* parent_rel, Path *par_subpath)
     }
 }
 
+static bool
+check_all_hints(PlannerInfo *root, RelOptInfo *rel, Path *path)
+{
+    JoinOrder *join_order;
+    Path *par_subpath;
+    bool satisfies_hints;
+
+    if (!current_hints || !current_hints->contains_hint)
+        return true;
+
+    join_order = current_hints->join_order_hint
+                 ? traverse_join_order(current_hints->join_order_hint, PathRelids(path))
+                 : NULL;
+
+    par_subpath = NULL;
+    satisfies_hints = path_satisfies_hints(path, join_order, &par_subpath, T_Invalid);
+    if (satisfies_hints)
+        satisfies_hints = path_satisfies_parallelization(rel, par_subpath);
+
+    return satisfies_hints;
+}
+
 /*
  * Our custom planner hook is required because this is the last point during the Postgres planning phase where the raw query
  * string is available. Everywhere down the line, only the parsed Query* node is available. However, the Query* does not
@@ -560,24 +590,12 @@ hint_aware_make_one_rel_prep(PlannerInfo *root, List *joinlist)
 extern "C" Path *
 hint_aware_final_path_callback(PlannerInfo *root, RelOptInfo *rel, Path *best_path)
 {
-    if (current_hints && current_hints->contains_hint && pglab_check_final_path)
+    if (current_hints && current_hints->contains_hint)
     {
-        JoinOrder *join_order;
-        Path *par_subplan;
-        bool satisfies_hints;
-
-        join_order = current_hints->join_order_hint
-                     ? traverse_join_order(current_hints->join_order_hint, PathRelids(best_path))
-                     : NULL;
-
-        satisfies_hints = path_satisfies_hints(best_path, join_order, &par_subplan);
-        if (satisfies_hints)
-            satisfies_hints = path_satisfies_parallelization(rel, par_subplan);
-
-        if (!satisfies_hints)
+        if (pglab_check_final_path &&
+            !check_all_hints(root, rel, best_path))
             ereport(ERROR, errmsg("pg_lab could not find a valid path that satisfies all hints"));
     }
-
 
     if (prev_final_path_callback)
         best_path = (*prev_final_path_callback)(root, rel, best_path);
@@ -666,7 +684,7 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
      * parallel subpaths. This subpath in turn serves as the primary input for the parallelization check.
      */
     par_subpath = NULL;
-    keep_new = path_satisfies_hints(new_path, join_order, &par_subpath);
+    keep_new = path_satisfies_hints(new_path, join_order, &par_subpath, T_Invalid);
     keep_new = keep_new && path_satisfies_parallelization(parent_rel, par_subpath);
 
     if (keep_new)
@@ -674,16 +692,10 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
         if (list_length(parent_rel->pathlist) == 1)
         {
             Path *placeholder_path;
-            Path *placeholder_par_subpath;
-            JoinOrder *placeholder_join_order;
             bool keep_placeholder;
 
             placeholder_path = (Path *) linitial(parent_rel->pathlist);
-            placeholder_join_order = current_hints->join_order_hint != NULL
-                                     ? traverse_join_order(current_hints->join_order_hint, PathRelids(placeholder_path))
-                                     : NULL;
-            keep_placeholder = path_satisfies_hints(placeholder_path, placeholder_join_order, &placeholder_par_subpath);
-            keep_placeholder = keep_placeholder && path_satisfies_parallelization(parent_rel, placeholder_par_subpath);
+            keep_placeholder = check_all_hints(current_planner_root, parent_rel, placeholder_path);
 
             if (!keep_placeholder)
             {
@@ -753,7 +765,7 @@ hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *new_path)
                  ? traverse_join_order(current_hints->join_order_hint, PathRelids(new_path))
                  : NULL;
 
-    keep_new = path_satisfies_hints(new_path, join_order, NULL);
+    keep_new = path_satisfies_hints(new_path, join_order, NULL, T_Invalid);
     
     if (!keep_new)
     {
@@ -791,7 +803,7 @@ hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *new_path)
             placeholder_join_order = current_hints->join_order_hint != NULL
                                      ? traverse_join_order(current_hints->join_order_hint, PathRelids(placeholder_path))
                                      : NULL;
-            keep_placeholder = path_satisfies_hints(placeholder_path, placeholder_join_order, NULL);
+            keep_placeholder = path_satisfies_hints(placeholder_path, placeholder_join_order, NULL, T_Invalid);
 
             if (!keep_placeholder)
             {

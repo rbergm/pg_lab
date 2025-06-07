@@ -29,9 +29,9 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
         void enterPlan_mode_setting(pg_lab::HintBlockParser::Plan_mode_settingContext *ctx) override
         {
             if (ctx->FULL())
-                hints_->mode = FULL;
+                hints_->mode = HINTMODE_FULL;
             else if (ctx->ANCHORED())
-                hints_->mode = ANCHORED;
+                hints_->mode = HINTMODE_ANCHORED;
             else
                 elog(ERROR, "Unknown plan mode setting: %s", ctx->getText().c_str());
 

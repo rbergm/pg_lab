@@ -21,8 +21,8 @@ extern char *current_query_string;
 
 typedef enum HintMode
 {
-    FULL,
-    ANCHORED
+    HINTMODE_FULL,
+    HINTMODE_ANCHORED
 } HintMode;
 
 typedef enum ParallelMode
