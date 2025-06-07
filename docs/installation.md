@@ -86,6 +86,7 @@ If you don't want to install pg_lab locally, we also supply a Dockerfile for a c
 When building the pg_lab image, you can pass most of the settings that the *postgres-setup.sh* script would expect:
 
 | Argument | Description |
+|----------|-------------|
 | `USERNAME` | The username in the container. This is also used as the Postgres user. The default username is *lab*. The server password is the same as the username. |
 | `TIMEZONE` | The timezone of the server. Defaults to *UTC*. |
 | `PGVER` | The Postgres server version to use. Currently, pg_lab supports PG 16 and 17 (the default). |
