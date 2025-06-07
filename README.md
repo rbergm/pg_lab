@@ -3,7 +3,9 @@
 ![GitHub License](https://img.shields.io/github/license/rbergm/pg_lab)
 ![Static Badge](https://img.shields.io/badge/version-0.2.0-blue)
 
-<img src="assets/pg_lab_logo.png" width="256" alt="The Logo of pg_lab: a blue elephant wearing a chemist's coat is surrounded by various reagents." />
+<p align="center">
+  <img src="assets/pg_lab_logo.png" width="256" alt="The Logo of pg_lab: a blue elephant wearing a chemist's coat is surrounded by various reagents." />
+</p>
 
 _pg\_lab_ is a research-focused fork of PostgreSQL.
 It has two main goals:
@@ -17,7 +19,7 @@ Essentially, this requires to maintain a fork of the Postgres source code (avail
 https://github.com/rbergm/postgres).
 Our SIGMOD'2025 paper [^elephant] provides some insight into the motivation behind pg_lab.
 
-| 💻 [Installation](docs/installation.md) | 📝 [Hinting](docs/hinting.md) | ⚙ [Extension Points](docs/extension_points.md) |
+| **💻 [Installation](docs/installation.md)** | **📝 [Hinting](docs/hinting.md)** | **🛠️ [Extension Points](docs/extension_points.md)** |
 
 
 ## ⚡ Quick start
