@@ -13,15 +13,24 @@ extern "C" {
 #include "utils/hsearch.h"
 
 
-#define EMPTY_BITMAP NULL;
+#define InvalidIndex -1
+#define EMPTY_BITMAP NULL
 
+/* The query currently being optimized/executed. */
 extern char *current_query_string;
 
 typedef enum HintMode
 {
-    FULL,
-    ANCHORED
+    HINTMODE_FULL,
+    HINTMODE_ANCHORED
 } HintMode;
+
+typedef enum ParallelMode
+{
+    PARMODE_DEFAULT,
+    PARMODE_SEQUENTIAL,
+    PARMODE_PARALLEL
+} ParallelMode;
 
 
 typedef enum HintTag
@@ -33,35 +42,50 @@ typedef enum HintTag
 
 typedef enum PhysicalOperator
 {
-    NOT_SPECIFIED,
-    SEQSCAN,
-    IDXSCAN,
-    NESTLOOP,
-    HASHJOIN,
-    MERGEJOIN,
-    MEMOIZE,
-    MATERIALIZE
+    OP_UNKNOWN,
+    OP_SEQSCAN,
+    OP_IDXSCAN,
+    OP_BITMAPSCAN,
+    OP_NESTLOOP,
+    OP_HASHJOIN,
+    OP_MERGEJOIN,
+    OP_MEMOIZE,
+    OP_MATERIALIZE
 } PhysicalOperator;
+
+extern const char *PhysicalOperatorToString(PhysicalOperator op);
+
+typedef struct OperatorHint
+{
+    Relids           relids;
+    PhysicalOperator op;
+
+    bool materialize_output;
+    bool memoize_output;
+
+    float parallel_workers;
+} OperatorHint;
 
 typedef struct JoinOrder
 {
     HintTag node_type;
-    Relids relids;  /* The rangetable indexes of the relations combined by this node */
+    Relids  relids;  /* The rangetable indexes of the relations combined by this node */
 
     /* Only set for base rels */
-    Index rt_index;
-    char* base_identifier;
+    Index  rt_index;
+    char  *base_identifier;
 
     /* Only set for join rels */
     JoinOrder *outer_child;
     JoinOrder *inner_child;
 
     /* Set on all nodes */
-    int level;
-    JoinOrder *parent_node; /* NULL for root node */
+    int           level;
+    OperatorHint *physical_op;
+    JoinOrder    *parent_node; /* NULL for root node */
 } JoinOrder;
 
-#define join_order_is_root(join_order) ((join_order)->parent_node == NULL)
+#define IsRootNode(join_order) ((join_order)->parent_node == NULL)
 
 extern JoinOrder* traverse_join_order(JoinOrder *join_order, Relids node);
 extern bool is_linear_join_order(JoinOrder *join_order);
@@ -69,29 +93,22 @@ extern void free_join_order(JoinOrder *join_order);
 
 typedef struct JoinOrderIterator
 {
-    bool done;
-    List *current_nodes;
+    bool       done;
+    List      *current_nodes;
     Bitmapset *current_relids;
 } JoinOrderIterator;
 
-extern void init_join_order_iterator(JoinOrderIterator *iterator, JoinOrder *join_order);
-extern void join_order_iterator_next(JoinOrderIterator *iterator);
-extern void free_join_order_iterator(JoinOrderIterator *iterator);
+extern void joinorder_it_init(JoinOrderIterator *iterator, JoinOrder *join_order);
+extern void joinorder_it_next(JoinOrderIterator *iterator);
+extern void joinorder_it_free(JoinOrderIterator *iterator);
 
-typedef struct OperatorHashEntry
-{
-    Relids relids;
-    PhysicalOperator op;
+extern void joinorder_to_string(JoinOrder *join_order, StringInfo buf);
 
-    bool materialize_output;
-    bool memoize_output;
-} OperatorHashEntry;
-
-typedef struct CardinalityHashEntry
+typedef struct CardinalityHint
 {
     Relids relids;
     Cardinality card;
-} CardinalityHashEntry;
+} CardinalityHint;
 
 typedef struct ScanCost
 {
@@ -113,9 +130,9 @@ typedef struct JoinCost
     Cost merge_total;
 } JoinCost;
 
-typedef struct CostHashEntry
+typedef struct CostHint
 {
-    Relids relids;
+    Relids  relids;
     HintTag node_type;
 
     union
@@ -123,10 +140,10 @@ typedef struct CostHashEntry
         ScanCost scan_cost;
         JoinCost join_cost;
     } costs;
-} CostHashEntry;
+} CostHint;
 
-typedef struct PlannerHints {
-
+typedef struct PlannerHints
+{
     char *raw_query;
 
     bool contains_hint;
@@ -135,15 +152,41 @@ typedef struct PlannerHints {
 
     HintMode mode;
 
+    ParallelMode parallel_mode;
+
     JoinOrder *join_order_hint;
 
-    HTAB *operator_hints;
+    struct HTAB *operator_hints;
 
-    HTAB *cardinality_hints;
+    struct HTAB *cardinality_hints;
 
-    HTAB *cost_hints;
+    struct HTAB *cost_hints;
 
+    Relids parallel_rels;
+
+    int parallel_workers;
+
+    bool parallelize_entire_plan;
 } PlannerHints;
+
+
+extern PlannerHints* init_hints(const char *raw_query);
+extern void free_hints(PlannerHints *hints);
+extern void parse_hint_block(PlannerInfo *root, PlannerHints *hints);
+extern void post_process_hint_block(PlannerHints *hints);
+
+extern void MakeOperatorHint(PlannerInfo *root, PlannerHints *hints, List *rels,
+                             PhysicalOperator op, float par_workers);
+extern void MakeIntermediateOpHint(PlannerInfo *root, PlannerHints *hints, List *rels,
+                                   bool materialize, bool memoize, float par_workers);
+
+extern void MakeCardHint(PlannerInfo *root, PlannerHints *hints, List *rels, Cardinality card);
+
+extern void MakeCostHint(PlannerInfo *root, PlannerHints *hints, List *rels,
+                         PhysicalOperator op, Cost startup_cost, Cost total_cost);
+
+extern JoinOrder* MakeJoinOrderIntermediate(PlannerInfo *root, JoinOrder *outer_child, JoinOrder *inner_child);
+extern JoinOrder* MakeJoinOrderBase(PlannerInfo *root, const char *relname);
 
 #ifdef __cplusplus
 } // extern "C"

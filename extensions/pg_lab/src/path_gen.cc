@@ -11,6 +11,7 @@ extern "C" {
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 
+#include "hints.h"
 #include "path_gen.h"
 
 /* extracted from joinpath.c */
@@ -228,6 +229,83 @@ void force_hashjoin_paths(PlannerInfo *root, RelOptInfo *joinrel, RelOptInfo *ou
                           JoinType jointype, JoinPathExtraData *extra)
 {
     hash_inner_and_outer(root, joinrel, outerrel, innerrel, jointype, extra);
+}
+
+
+static RelOptInfo *
+fetch_reloptinfo(PlannerInfo *root, Relids relids)
+{
+    List        *candidate_relopts;
+    ListCell    *lc;
+    int          level;
+
+    level = bms_num_members(relids);
+    candidate_relopts = root->join_rel_level[level];
+
+    foreach (lc, candidate_relopts)
+    {
+        RelOptInfo *rel = (RelOptInfo *) lfirst(lc);
+        if (bms_equal(rel->relids, relids))
+            return rel;
+    }
+
+    return NULL;
+}
+
+
+RelOptInfo *
+force_join_order(PlannerInfo* root, int levels_needed, List* initial_rels)
+{
+    JoinOrder           *join_order;
+    JoinOrderIterator   iterator;
+    JoinOrder           *current_node;
+    ListCell            *lc;
+    RelOptInfo          *final_rel;
+
+    /* Initialize important PlannerInfo data, same as standard_join_search() does */
+    root->join_rel_level = (List **) palloc0((levels_needed + 1) * sizeof(List *));
+    root->join_rel_level[1] = initial_rels;
+
+    /* Initialize join order iterator */
+    join_order = ((PlannerHints *) root->join_search_private)->join_order_hint;
+    joinorder_it_init(&iterator, join_order);
+    joinorder_it_next(&iterator); /* Iterator starts at base rels, skip these */
+
+    /* Main "optimization" loop */
+    while (!iterator.done)
+    {
+        foreach (lc, iterator.current_nodes)
+        {
+            RelOptInfo *outer_rel = NULL;
+            RelOptInfo *inner_rel = NULL;
+            RelOptInfo *join_rel = NULL;
+            current_node = (JoinOrder*) lfirst(lc);
+            Assert(current_node->node_type == JOIN_REL);
+
+            outer_rel = fetch_reloptinfo(root, current_node->outer_child->relids);
+            inner_rel = fetch_reloptinfo(root, current_node->inner_child->relids);
+            Assert(outer_rel); Assert(inner_rel);
+
+            /* XXX: this way we cannot force join directions. But: do we really need to? */
+            root->join_cur_level = bms_num_members(current_node->relids);
+            join_rel = make_join_rel(root, outer_rel, inner_rel);
+
+            /* Post-process the join_rel same way as standard_join_search() does */
+            generate_partitionwise_join_paths(root, join_rel);
+            if (!bms_equal(join_rel->relids, root->all_query_rels))
+				generate_useful_gather_paths(root, join_rel, false);
+            set_cheapest(join_rel);
+        }
+
+        joinorder_it_next(&iterator);
+    }
+
+    /* Post-process generated relations, same as standard_join_search() does */
+    final_rel = (RelOptInfo *) linitial(root->join_rel_level[levels_needed]);
+    root->join_rel_level = NULL;
+
+    joinorder_it_free(&iterator);
+    return final_rel;
 }
 
 #ifdef __cplusplus

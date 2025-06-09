@@ -246,6 +246,7 @@ CollectChildOids(PlannedStmt *query_plan, Plan *root)
     switch (root->type)
     {
         case T_BitmapAnd:
+        {
             BitmapAnd *bm_and = (BitmapAnd*) root;
             foreach (lc, bm_and->bitmapplans)
             {
@@ -253,8 +254,10 @@ CollectChildOids(PlannedStmt *query_plan, Plan *root)
                 oids_list = list_concat(oids_list, CollectScanOids(query_plan, child));
             }
             break;
+        }
 
         case T_BitmapOr:
+        {
             BitmapOr *bm_or = (BitmapOr*) root;
             foreach (lc, bm_or->bitmapplans)
             {
@@ -262,8 +265,10 @@ CollectChildOids(PlannedStmt *query_plan, Plan *root)
                 oids_list = list_concat(oids_list, CollectScanOids(query_plan, child));
             }
             break;
+        }
 
         case T_Append:
+        {
             Append *append = (Append*) root;
             foreach (lc, append->appendplans)
             {
@@ -271,8 +276,10 @@ CollectChildOids(PlannedStmt *query_plan, Plan *root)
                 oids_list = list_concat(oids_list, CollectScanOids(query_plan, child));
             }
             break;
+        }
 
         case T_MergeAppend:
+        {
             MergeAppend *merge = (MergeAppend*) root;
             foreach (lc, merge->mergeplans)
             {
@@ -280,11 +287,14 @@ CollectChildOids(PlannedStmt *query_plan, Plan *root)
                 oids_list = list_concat(oids_list, CollectScanOids(query_plan, child));
             }
             break;
+        }
 
         case T_SubqueryScan:
+        {
             SubqueryScan *subquery = (SubqueryScan*) root;
             oids_list = list_concat(oids_list, CollectScanOids(query_plan, subquery->subplan));
             break;
+        }
 
         default:
             /* Silence compiler warnings. We don't need to handle the remaining nodes in any special way. */
@@ -307,28 +317,38 @@ CollectScanOids(PlannedStmt *query_plan, Plan *root)
     switch (root->type)
     {
         case T_SeqScan:
+        {
             SeqScan *seq_scan = (SeqScan*) root;
             scan_rte = rt_fetch(seq_scan->scan.scanrelid, query_plan->rtable);
             return scan_rte->rtekind == RTE_RELATION ? list_make1_oid(scan_rte->relid) : NIL;
+        }
 
         case T_IndexScan:
+        {
             IndexScan *idx_scan = (IndexScan*) root;
             scan_rte = rt_fetch(idx_scan->scan.scanrelid, query_plan->rtable);
             return list_make2_oid(idx_scan->indexid, scan_rte->relid);
+        }
 
         case T_IndexOnlyScan:
+        {
             IndexOnlyScan *idxo_scan = (IndexOnlyScan*) root;
             return list_make1_oid(idxo_scan->indexid);
+        }
 
 
         case T_BitmapHeapScan:
+        {
             BitmapHeapScan *bm_heap_scan = (BitmapHeapScan*) root;
             scan_rte = rt_fetch(bm_heap_scan->scan.scanrelid, query_plan->rtable);
             return list_concat(list_make1_oid(scan_rte->relid), CollectChildOids(query_plan, root));
+        }
 
         case T_BitmapIndexScan:
+        {
             BitmapIndexScan *bm_idx_scan = (BitmapIndexScan*) root;
             return list_make1_oid(bm_idx_scan->indexid);
+        }
 
         default:
             Assert(false);
@@ -354,9 +374,7 @@ RemoveOidDuplicates(List *oids)
     }
 
     while ((i = bms_next_member(oid_set, i)) >= 0)
-    {
         unique_oids = lappend_oid(unique_oids, i);
-    }
 
     bms_free(oid_set);
     return unique_oids;

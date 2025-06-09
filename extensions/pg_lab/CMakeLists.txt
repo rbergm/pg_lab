@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.19)
 project(pg_lab
-    VERSION 0.0.1
+    VERSION 0.0.3
     DESCRIPTION ""
     LANGUAGES CXX)
 
@@ -9,15 +9,24 @@ include(FetchContent)
 set(CMAKE_GENERATOR "Unix Makefiles")
 set(CXX_STANDARD_REQUIRED 20)
 set(CMAKE_CXX_STANDARD 20)
-add_compile_options(-fPIC -ggdb -Og)
+add_compile_options(-fPIC -g -Wall -Wextra)
 
-if (DEFINED ENV{PG_INSTALL_DIR})
-    set(PG_INSTALL_DIR $ENV{PG_INSTALL_DIR})
-else()
-    set(PG_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../pg-build/pg-17")
+if (CMAKE_BUILD_TYPE STREQUAL "")
+    set(CMAKE_BUILD_TYPE "Debug")
+    add_compile_options(-O0)
+elseif (CMAKE_BUILD_TYPE STREQUAL "Debug")
+    add_compile_options(-O0)
 endif()
 
+set(PG_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../pg-build/pg-17" CACHE PATH "PostgreSQL server installation directory")
 message(STATUS "Using PostgreSQL server path: ${PG_INSTALL_DIR}")
+
+
+set(PGLAB_TRACE OFF CACHE BOOL "Enable tracing of the hinting extension")
+if (PGLAB_TRACE)
+    message(STATUS "Enabling tracing")
+    add_compile_definitions(PGLAB_TRACE)
+endif()
 
 #
 # Antlr4 config
@@ -56,7 +65,7 @@ antlr_target(HintBlockGrammar HintBlock.g4 BOTH LISTENER PACKAGE pg_lab)
 # Project config
 #
 
-add_library(pg_lab SHARED
+add_library(pg_lab MODULE
     src/pg_lab.cc
     src/hints.cc
     src/hint_parser.cc
@@ -65,7 +74,7 @@ add_library(pg_lab SHARED
 
 if(APPLE)
     set_target_properties(pg_lab PROPERTIES
-        LINK_FLAGS "-undefined dynamic_lookup"
+        LINK_FLAGS "-Wl,-undefined,dynamic_lookup -Wl,-flat_namespace"
     )
 endif()
 

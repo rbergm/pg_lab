@@ -22,22 +22,30 @@ setting_list
 
 setting
     : plan_mode_setting
+    | parallelization_setting
     ;
 
 plan_mode_setting
     : PLANMODE EQ (FULL | ANCHORED)
     ;
 
-join_order_hint
-    : JOINORDER LPAREN intermediate_join_order RPAREN
+parallelization_setting
+    : PARMODE EQ (DEFAULT | SEQUENTIAL | PARALLEL)
     ;
+
+join_order_hint
+    : JOINORDER LPAREN join_order_entry RPAREN
+    ;
+
 join_order_entry
     : base_join_order
     | intermediate_join_order
     ;
+
 base_join_order
     : relation_id
     ;
+
 intermediate_join_order
     : LPAREN join_order_entry join_order_entry RPAREN
     ;
@@ -45,26 +53,39 @@ intermediate_join_order
 operator_hint
     : join_op_hint
     | scan_op_hint
+    | result_hint
     ;
 
 join_op_hint
-    : (NESTLOOP | HASHJOIN | MERGEJOIN | MEMOIZE | MATERIALIZE) LPAREN binary_rel_id relation_id* (forced_hint? | cost_hint) RPAREN
+    : (NESTLOOP | HASHJOIN | MERGEJOIN | MEMOIZE | MATERIALIZE) LPAREN binary_rel_id relation_id* param_list? RPAREN
     ;
 
 scan_op_hint
-    : (SEQSCAN | IDXSCAN | BITMAPSCAN | MEMOIZE | MATERIALIZE) LPAREN relation_id (forced_hint? | cost_hint) RPAREN
+    : (SEQSCAN | IDXSCAN | BITMAPSCAN | MEMOIZE | MATERIALIZE) LPAREN relation_id param_list? RPAREN
+    ;
+
+result_hint
+    : RESULT LPAREN parallel_hint RPAREN
     ;
 
 cardinality_hint
     : CARD LPAREN relation_id+ HASH INT RPAREN
     ;
 
+param_list
+    : LPAREN (forced_hint | cost_hint | parallel_hint)+ RPAREN
+    ;
+
 cost_hint
-    : LPAREN COST STARTUP EQ cost TOTAL EQ cost RPAREN
+    : COST LPAREN STARTUP EQ cost TOTAL EQ cost RPAREN
+    ;
+
+parallel_hint
+    : WORKERS EQ INT
     ;
 
 forced_hint
-    : LPAREN FORCED RPAREN
+    : FORCED
     ;
 
 binary_rel_id
@@ -83,21 +104,34 @@ cost
 // LEXER part
 
 HBLOCK_START : '/*=pg_lab=' ;
-HBLOCK_END   : '*/'  ;
-LPAREN       : '('   ;
-RPAREN       : ')'   ;
-LBRACE       : '{'   ;
-RBRACE       : '}'   ;
-LBRACKET     : '['   ;
-RBRACKET     : ']'   ;
-HASH         : '#'   ;
-EQ           : '='   ;
-DOT          : '.'   ;
-SEM          : ';'   ;
+HBLOCK_END   : '*/'         ;
+LPAREN       : '('          ;
+RPAREN       : ')'          ;
+LBRACE       : '{'          ;
+RBRACE       : '}'          ;
+LBRACKET     : '['          ;
+RBRACKET     : ']'          ;
+HASH         : '#'          ;
+EQ           : '='          ;
+DOT          : '.'          ;
+SEM          : ';'          ;
+DEFAULT      : 'default'    ;
 
+// Config
 CONFIG      : 'Config'      ;
 PLANMODE    : 'plan_mode'   ;
+FULL        : 'full'        ;
+ANCHORED    : 'anchored'    ;
+PARMODE     : 'exec_mode'   ;
+SEQUENTIAL  : 'sequential'  ;
+PARALLEL    : 'parallel'    ;
+
+
+// Top-level hints
 JOINORDER   : 'JoinOrder'   ;
+CARD        : 'Card'        ;
+
+// Operators
 NESTLOOP    : 'NestLoop'    ;
 MERGEJOIN   : 'MergeJoin'   ;
 HASHJOIN    : 'HashJoin'    ;
@@ -106,13 +140,15 @@ IDXSCAN     : 'IdxScan'     ;
 BITMAPSCAN  : 'BitmapScan'  ;
 MEMOIZE     : 'Memo'        ;
 MATERIALIZE : 'Material'    ;
-CARD        : 'Card'        ;
+RESULT      : 'Result'      ;
+
+// Operator parameters
 COST        : 'Cost'        ;
 STARTUP     : 'Start'       ;
 TOTAL       : 'Total'       ;
+WORKERS     : 'Workers'     ;
 FORCED      : 'Forced'      ;
-FULL        : 'full'        ;
-ANCHORED    : 'anchored'    ;
+
 
 REL_ID      : [a-z_][a-z_0-9]*  ;
 FLOAT       : [0-9]+ DOT [0-9]+ ;
