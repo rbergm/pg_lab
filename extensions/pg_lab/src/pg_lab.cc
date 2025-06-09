@@ -222,9 +222,9 @@ path_satisfies_operator(Path *path, JoinOrder *join_order, NodeTag parent_node)
         /* Nothing restricts the choice of operators, we are good to continue */
         return true;
 
-    if (op_hint->memoize_output && parent_node != T_Memoize)
+    if (parent_node != T_Invalid && parent_node != T_Memoize && op_hint->memoize_output)
         return false;
-    else if (op_hint->materialize_output && parent_node != T_Material)
+    else if (parent_node != T_Invalid && parent_node != T_Material && op_hint->materialize_output)
         return false;
 
     switch (op_hint->op)
