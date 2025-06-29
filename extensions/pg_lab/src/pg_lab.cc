@@ -1309,6 +1309,51 @@ hint_aware_final_cost_mergejoin(PlannerInfo *root, MergePath *path,
         raw_path->total_cost = total_cost;
 }
 
+static char *
+debug_reloptinfo(RelOptInfo *rel)
+{
+    StringInfo buf;
+    int i = -1;
+    buf = makeStringInfo();
+
+    while ((i = bms_next_member(rel->relids, i)) >= 0)
+    {
+        RangeTblEntry *rte;
+        rte = current_planner_root->simple_rte_array[i];
+        if (!rte)
+            continue;
+
+        appendStringInfo(buf, "%s ", rte->eref->aliasname);
+    }
+
+    return buf->data;
+}
+
+static Path *
+debug_fetch_outer(Path *path)
+{
+    JoinPath *jpath;
+
+    if (!IsAJoinPath(path))
+        return NULL;
+
+    jpath = (JoinPath *) path;
+    return jpath->outerjoinpath;
+}
+
+static Path *
+debug_fetch_inner(Path *path)
+{
+    JoinPath *jpath;
+
+    if (!IsAJoinPath(path))
+        return NULL;
+
+    jpath = (JoinPath *) path;
+    return jpath->innerjoinpath;
+}
+
+
 extern "C" void
 _PG_init(void)
 {
