@@ -700,7 +700,9 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
      */
     par_subpath = NULL;
     keep_new = path_satisfies_hints(new_path, join_order, &par_subpath, NULL);
-    keep_new = keep_new && path_satisfies_parallelization(parent_rel, par_subpath);
+
+    if (keep_new && par_subpath)
+        keep_new = path_satisfies_parallelization(parent_rel, par_subpath);
 
     if (keep_new)
     {

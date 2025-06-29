@@ -100,7 +100,7 @@ Compare the following queries:
 imdb=# EXPLAIN /*=pg_lab= Config(plan_mode=anchored) NestLoop(t mi) SeqScan(mi) */
 imdb-# SELECT * FROM title t JOIN movie_info mi ON t.id = mi.movie_id WHERE t.production_year < 1930;
 
-                                          QUERY PLAN                                           
+                                          QUERY PLAN
 -----------------------------------------------------------------------------------------------
  Gather  (cost=1000.44..5234008.65 rows=703856 width=168)
    Workers Planned: 2
@@ -115,13 +115,13 @@ imdb-# SELECT * FROM title t JOIN movie_info mi ON t.id = mi.movie_id WHERE t.pr
 ```
 
 Here, the optimizer decided to insert an additional memoize-operator after scanning *movie_info*.
-In contrast, 
+In contrast,
 
 ```
 imdb=# EXPLAIN /*=pg_lab= Config(plan_mode=full) NestLoop(t mi) SeqScan(mi) */
 imdb-# SELECT * FROM title t JOIN movie_info mi ON t.id = mi.movie_info WHERE t.production_year < 1930;
 
-                                          QUERY PLAN                                           
+                                          QUERY PLAN
 -----------------------------------------------------------------------------------------------
  Gather  (cost=1000.43..5308186.98 rows=703856 width=168)
    Workers Planned: 2
@@ -146,7 +146,7 @@ For example, consider
 imdb=# EXPLAIN /*=pg_lab= Config(exec_mode=sequential) */
 imdb-# SELECT count(*) FROM title t JOIN movie_info mi ON t.id = mi.movie_id;
 
-                                                  QUERY PLAN                                                  
+                                                  QUERY PLAN
 --------------------------------------------------------------------------------------------------------------
  Aggregate  (cost=1031737.16..1031737.17 rows=1 width=8)
    ->  Merge Join  (cost=21.67..969217.12 rows=25008014 width=0)
@@ -161,7 +161,7 @@ compared to
 imdb=# EXPLAIN /*=pg_lab= Config(exec_mode=parallel) */
 imdb-# SELECT count(*) FROM title t JOIN movie_info mi ON t.id = mi.movie_id;
 
-                                                            QUERY PLAN                                                             
+                                                            QUERY PLAN
 -----------------------------------------------------------------------------------------------------------------------------------
  Finalize Aggregate  (cost=622303.11..622303.12 rows=1 width=8)
    ->  Gather  (cost=622302.89..622303.10 rows=2 width=8)
@@ -204,14 +204,14 @@ The cardinality is interpreted as the size of the specific intermediate after al
 ```
 imdb=# EXPLAIN /*=pg_lab= Card(t #4200000) */ SELECT * FROM title t WHERE t.production_year > 2010;
 
-                                   QUERY PLAN                                    
+                                   QUERY PLAN
 ---------------------------------------------------------------------------------
  Seq Scan on title t  (cost=0.00..127093.02 rows=4200000 width=94)
    Filter: (production_year > 2010)
 
 imdb=# EXPLAIN /*=pg_lab= Card(t #42) */ SELECT * FROM title t WHERE t.production_year > 2010;
 
-                                 QUERY PLAN                                 
+                                 QUERY PLAN
 ----------------------------------------------------------------------------
  Gather  (cost=1000.00..93556.29 rows=42 width=94)
    Workers Planned: 2
@@ -300,7 +300,7 @@ any operator hint like `MergeJoin(t mi (workers=12))` would indicate that the me
 imdb=# EXPLAIN /*=pg_lab= MergeJoin(t mi (workers=12)) */
 imdb-# SELECT count(*) FROM title t JOIN movie_info mi ON t.id = mi.movie_id
 
-                                                         QUERY PLAN                                                         
+                                                         QUERY PLAN
 ----------------------------------------------------------------------------------------------------------------------------
  Aggregate  (cost=3659465.64..3659465.65 rows=1 width=8)
    ->  Gather  (cost=771028.77..3596945.60 rows=25008014 width=0)
@@ -324,7 +324,7 @@ aggregation can be included in the parallel portion:
 imdb=# EXPLAIN /*=pg_lab= Result(workers=12) MergeJoin(t mi) */
 imdb-# SELECT count(*) FROM title t JOIN movie_info mi ON t.id = mi.movie_id
 
-                                                            QUERY PLAN                                                            
+                                                            QUERY PLAN
 ----------------------------------------------------------------------------------------------------------------------------------
  Finalize Aggregate  (cost=1101355.45..1101355.46 rows=1 width=8)
    ->  Gather  (cost=1101354.21..1101355.42 rows=12 width=8)
@@ -375,7 +375,7 @@ imdb-# SELECT count(*)
 imdb-# FROM title t JOIN movie_info mi ON t.id = mi.movie_id JOIN cast_info ci ON t.id = ci.movie_id
 imdb-# WHERE t.production_year > 2000;
 
-                                                              QUERY PLAN                                                              
+                                                              QUERY PLAN
 --------------------------------------------------------------------------------------------------------------------------------------
  Finalize Aggregate  (cost=2772595.00..2772595.01 rows=1 width=8)
    ->  Gather  (cost=2772594.79..2772595.00 rows=2 width=8)
@@ -400,7 +400,7 @@ imdb-# SELECT count(*)
 imdb-# FROM title t JOIN movie_info mi ON t.id = mi.movie_id JOIN cast_info ci ON t.id = ci.movie_id
 imdb-# WHERE t.production_year > 2000;
 
-                                                           QUERY PLAN                                                           
+                                                           QUERY PLAN
 --------------------------------------------------------------------------------------------------------------------------------
  Finalize Aggregate  (cost=2955348.55..2955348.56 rows=1 width=8)
    ->  Gather  (cost=2955348.34..2955348.55 rows=2 width=8)
@@ -484,7 +484,7 @@ imdb-# /*=pg_lab=
         */
 imdb-# SELECT * FROM title t JOIN movie_info mi ON t.id = mi.movie_id;
 
-                                          QUERY PLAN                                           
+                                          QUERY PLAN
 -----------------------------------------------------------------------------------------------
  Gather  (cost=1000.44..6788675.95 rows=25008014 width=168)
    Workers Planned: 2
@@ -514,7 +514,7 @@ imdb-# SELECT * FROM title t
 imdb-# JOIN movie_info mi ON t.id = mi.movie_id
 imdb-# JOIN cast_info ci ON t.id = ci.movie_id;
 
-                                            QUERY PLAN                                            
+                                            QUERY PLAN
 --------------------------------------------------------------------------------------------------
  Merge Join  (cost=22102162.86..45638824.47 rows=335221405 width=210)
    Merge Cond: (mi.movie_id = t.id)
@@ -537,7 +537,7 @@ Likewise, the following does not work because Postgres never considers index pat
 ```
 imdb=# EXPLAIN /*=pg_lab= IdxScan(t) */ SELECT * FROM title;
 
-                            QUERY PLAN                             
+                            QUERY PLAN
 -------------------------------------------------------------------
  Seq Scan on title t  (cost=0.00..115250.42 rows=4737042 width=94)
 ```
@@ -553,6 +553,97 @@ It is currently not possible to only specify the join order, but let Postgres as
 To make this a bit more obvious, we always require an additional set of paratheses around the outermost join, i.e.
 `JoinOrder((R S))` instead of `JoinOrder(R S)`.
 
+### Plan equivalence
+
+Optimizer hints are a fairly abstract technique to influence the query plan. As a consequence, using hints to exactly
+reproduce a plan might not always work. This is because the optimizer still retains its freedom regarding lower-level details
+of the query plan. For example, consider query _q-10_ from the Stats benchmark. Natively, Postgres might produce a plan like
+the following:
+
+```
+stats=# EXPLAIN
+SELECT COUNT(*)
+FROM comments AS c, posts AS p, users AS u
+WHERE c.UserId = u.Id
+  AND u.Id = p.OwnerUserId
+  AND c.CreationDate >= CAST('2010-08-05 00:36:02' AS timestamp)
+  AND c.CreationDate <= CAST('2014-09-08 16:50:49' AS timestamp)
+  AND p.ViewCount >= 0
+  AND p.ViewCount <= 2897
+  AND p.CommentCount >= 0
+  AND p.CommentCount <= 16
+  AND p.FavoriteCount >= 0
+  AND p.FavoriteCount <= 10;
+                                                                                       QUERY PLAN
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Finalize Aggregate  (cost=20458.22..20458.23 rows=1 width=8)
+   ->  Gather  (cost=20458.00..20458.21 rows=2 width=8)
+         Workers Planned: 2
+         ->  Partial Aggregate  (cost=19458.00..19458.01 rows=1 width=8)
+               ->  Nested Loop  (cost=1196.96..15890.30 rows=1427082 width=0)
+                     ->  Parallel Hash Join  (cost=1196.66..8825.80 rows=71508 width=8)
+                           Hash Cond: (c.userid = u.id)
+                           ->  Parallel Seq Scan on comments c  (cost=0.00..7441.41 rows=71508 width=4)
+                                 Filter: ((creationdate >= '2010-08-05 00:36:02'::timestamp without time zone) AND (creationdate <= '2014-09-08 16:50:49'::timestamp without time zone))
+                           ->  Parallel Hash  (cost=900.15..900.15 rows=23721 width=4)
+                                 ->  Parallel Index Only Scan using users_pkey on users u  (cost=0.29..900.15 rows=23721 width=4)
+                     ->  Memoize  (cost=0.30..0.80 rows=1 width=4)
+                           Cache Key: c.userid
+                           Cache Mode: logical
+                           ->  Index Scan using posts_owneruserid_fkey on posts p  (cost=0.29..0.79 rows=1 width=4)
+                                 Index Cond: (owneruserid = c.userid)
+                                 Filter: ((viewcount >= 0) AND (viewcount <= 2897) AND (commentcount >= 0) AND (commentcount <= 16) AND (favoritecount >= 0) AND (favoritecount <= 10))
+ Optimizer: planner=Custom Hook joinorder=Dynamic Programming
+(18 rows)
+```
+
+Using hints for all of the major optimizer decisions results in a plan like the following:
+
+```
+stats=# EXPLAIN
+/*=pg_lab= Result(workers=2) NestLoop(c p u) HashJoin(c u) SeqScan(c) IdxScan(u) IdxScan(p) Memo(p) */
+SELECT COUNT(*)
+FROM comments AS c, posts AS p, users AS u
+WHERE c.UserId = u.Id
+  AND u.Id = p.OwnerUserId
+  AND c.CreationDate >= CAST('2010-08-05 00:36:02' AS timestamp)
+  AND c.CreationDate <= CAST('2014-09-08 16:50:49' AS timestamp)
+  AND p.ViewCount >= 0
+  AND p.ViewCount <= 2897
+  AND p.CommentCount >= 0
+  AND p.CommentCount <= 16
+  AND p.FavoriteCount >= 0
+  AND p.FavoriteCount <= 10;
+                                                                                       QUERY PLAN
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Finalize Aggregate  (cost=82442.24..82442.25 rows=1 width=8)
+   ->  Gather  (cost=82442.02..82442.23 rows=2 width=8)
+         Workers Planned: 2
+         ->  Partial Aggregate  (cost=81442.02..81442.03 rows=1 width=8)
+               ->  Nested Loop  (cost=1041.29..77874.32 rows=1427082 width=0)
+                     Join Filter: (c.userid = p.owneruserid)
+                     ->  Parallel Hash Join  (cost=1040.99..8670.12 rows=71508 width=8)
+                           Hash Cond: (c.userid = u.id)
+                           ->  Parallel Seq Scan on comments c  (cost=0.00..7441.41 rows=71508 width=4)
+                                 Filter: ((creationdate >= '2010-08-05 00:36:02'::timestamp without time zone) AND (creationdate <= '2014-09-08 16:50:49'::timestamp without time zone))
+                           ->  Parallel Hash  (cost=830.96..830.96 rows=16802 width=4)
+                                 ->  Parallel Index Only Scan using users_pkey on users u  (cost=0.29..830.96 rows=16802 width=4)
+                     ->  Memoize  (cost=0.30..1.68 rows=1 width=4)
+                           Cache Key: u.id
+                           Cache Mode: logical
+                           ->  Index Scan using posts_owneruserid_fkey on posts p  (cost=0.29..1.67 rows=1 width=4)
+                                 Index Cond: (owneruserid = u.id)
+                                 Filter: ((viewcount >= 0) AND (viewcount <= 2897) AND (commentcount >= 0) AND (commentcount <= 16) AND (favoritecount >= 0) AND (favoritecount <= 10))
+ Optimizer: planner=Custom Hook joinorder=Dynamic Programming
+(19 rows)
+```
+
+Notice that the optimizer selected different columns for the memoize node and below. These columns made an additional join
+filter column necessary. As a consequence, the hinted plan has almost 4x higher estimated cost that the original query plan.
+This discrepancy can only be changed by using significantly lower-level hints, which is something we currently do not plan on
+allowing (since it defeats the entire purpose of hints as an easy tool to influence the optimizer in the first place).
+Therefore, cost estimates should be used carefully in the presence of hints.
+
 ### Hint parsing
 
 The parser is currently implemented as an ANTLR grammar, but there is no error listener yet.
@@ -563,7 +654,7 @@ For example, the following hint block will simply not do anything (the correct h
 ```
 imdb=# EXPLAIN /*=pg_lab= SequentialScan(t) */ SELECT * FROM title t WHERE t.id < 42;
 
-                                 QUERY PLAN                                 
+                                 QUERY PLAN
 ----------------------------------------------------------------------------
  Index Scan using title_pkey on title t  (cost=0.43..9.29 rows=41 width=94)
    Index Cond: (id < 42)

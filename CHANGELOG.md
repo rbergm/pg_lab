@@ -38,9 +38,11 @@ Since we are not ready for the 1.0 release yet, this does not matter right now.
 - _None_
 
 ### 🏥 Fixes
-- Fixed being unable to hint mergejoins with materialized inner input node. As it turns out, the material nodes are never
+- Fixed being unable to hint merge joins with materialized inner input node. As it turns out, the material nodes are never
   actually inserted during path construction. Instead, the planner creates them on-the-fly when turning the merge join path
   into a plan node.
+- Fixed not finding parallel plans for some hint combinations. Parallel joins take their inner access path from the (parallel
+  safe) non-partial access paths, which was not correctly accounted for before.
 
 ### 🪲 Known bugs
 - _None_
