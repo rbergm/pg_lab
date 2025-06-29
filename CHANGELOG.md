@@ -23,4 +23,24 @@ Since we are not ready for the 1.0 release yet, this does not matter right now.
 ### 🪲 Known bugs
 - _None_
 
+---
 
+
+# ⏳ Version 0.2.1 _(planned)_
+
+### 🐣 New features
+- _None_
+
+### 💀 Breaking changes
+- _None_
+
+### 📰 Updates
+- _None_
+
+### 🏥 Fixes
+- Fixed being unable to hint mergejoins with materialized inner input node. As it turns out, the material nodes are never
+  actually inserted during path construction. Instead, the planner creates them on-the-fly when turning the merge join path
+  into a plan node.
+
+### 🪲 Known bugs
+- _None_
