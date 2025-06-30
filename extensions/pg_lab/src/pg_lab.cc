@@ -518,7 +518,7 @@ path_satisfies_parallelization(RelOptInfo* parent_rel, Path *par_subpath)
 }
 
 static bool
-check_all_hints(PlannerInfo *root, RelOptInfo *rel, Path *path)
+check_all_hints(PlannerInfo *root, RelOptInfo *rel, Path *path, bool force_parallelization_check)
 {
     JoinOrder *join_order;
     Path *par_subpath;
@@ -533,7 +533,7 @@ check_all_hints(PlannerInfo *root, RelOptInfo *rel, Path *path)
 
     par_subpath = NULL;
     satisfies_hints = path_satisfies_hints(path, join_order, &par_subpath, NULL);
-    if (satisfies_hints)
+    if (satisfies_hints && (force_parallelization_check || par_subpath))
         satisfies_hints = path_satisfies_parallelization(rel, par_subpath);
 
     return satisfies_hints;
@@ -608,7 +608,7 @@ hint_aware_final_path_callback(PlannerInfo *root, RelOptInfo *rel, Path *best_pa
     if (current_hints && current_hints->contains_hint)
     {
         if (pglab_check_final_path &&
-            !check_all_hints(root, rel, best_path))
+            !check_all_hints(root, rel, best_path, true))
             ereport(ERROR, errmsg("pg_lab could not find a valid path that satisfies all hints"));
     }
 
@@ -712,7 +712,7 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
             bool keep_placeholder;
 
             placeholder_path = (Path *) linitial(parent_rel->pathlist);
-            keep_placeholder = check_all_hints(current_planner_root, parent_rel, placeholder_path);
+            keep_placeholder = check_all_hints(current_planner_root, parent_rel, placeholder_path, false);
 
             if (!keep_placeholder)
             {

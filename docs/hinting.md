@@ -576,14 +576,14 @@ WHERE c.UserId = u.Id
   AND p.FavoriteCount <= 10;
                                                                                        QUERY PLAN
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- Finalize Aggregate  (cost=20458.22..20458.23 rows=1 width=8)
-   ->  Gather  (cost=20458.00..20458.21 rows=2 width=8)
+ Finalize Aggregate  (cost=20417.33..20417.34 rows=1 width=8)
+   ->  Gather  (cost=20417.12..20417.33 rows=2 width=8)
          Workers Planned: 2
-         ->  Partial Aggregate  (cost=19458.00..19458.01 rows=1 width=8)
-               ->  Nested Loop  (cost=1196.96..15890.30 rows=1427082 width=0)
-                     ->  Parallel Hash Join  (cost=1196.66..8825.80 rows=71508 width=8)
+         ->  Partial Aggregate  (cost=19417.12..19417.13 rows=1 width=8)
+               ->  Nested Loop  (cost=1196.96..15910.81 rows=1402522 width=0)
+                     ->  Parallel Hash Join  (cost=1196.66..8825.79 rows=71505 width=8)
                            Hash Cond: (c.userid = u.id)
-                           ->  Parallel Seq Scan on comments c  (cost=0.00..7441.41 rows=71508 width=4)
+                           ->  Parallel Seq Scan on comments c  (cost=0.00..7441.41 rows=71505 width=4)
                                  Filter: ((creationdate >= '2010-08-05 00:36:02'::timestamp without time zone) AND (creationdate <= '2014-09-08 16:50:49'::timestamp without time zone))
                            ->  Parallel Hash  (cost=900.15..900.15 rows=23721 width=4)
                                  ->  Parallel Index Only Scan using users_pkey on users u  (cost=0.29..900.15 rows=23721 width=4)
@@ -616,33 +616,34 @@ WHERE c.UserId = u.Id
   AND p.FavoriteCount <= 10;
                                                                                        QUERY PLAN
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- Finalize Aggregate  (cost=82442.24..82442.25 rows=1 width=8)
-   ->  Gather  (cost=82442.02..82442.23 rows=2 width=8)
+ Finalize Aggregate  (cost=20261.66..20261.67 rows=1 width=8)
+   ->  Gather  (cost=20261.45..20261.66 rows=2 width=8)
          Workers Planned: 2
-         ->  Partial Aggregate  (cost=81442.02..81442.03 rows=1 width=8)
-               ->  Nested Loop  (cost=1041.29..77874.32 rows=1427082 width=0)
-                     Join Filter: (c.userid = p.owneruserid)
-                     ->  Parallel Hash Join  (cost=1040.99..8670.12 rows=71508 width=8)
+         ->  Partial Aggregate  (cost=19261.45..19261.46 rows=1 width=8)
+               ->  Nested Loop  (cost=1041.29..15755.14 rows=1402522 width=0)
+                     ->  Parallel Hash Join  (cost=1040.99..8670.11 rows=71505 width=8)
                            Hash Cond: (c.userid = u.id)
-                           ->  Parallel Seq Scan on comments c  (cost=0.00..7441.41 rows=71508 width=4)
+                           ->  Parallel Seq Scan on comments c  (cost=0.00..7441.41 rows=71505 width=4)
                                  Filter: ((creationdate >= '2010-08-05 00:36:02'::timestamp without time zone) AND (creationdate <= '2014-09-08 16:50:49'::timestamp without time zone))
                            ->  Parallel Hash  (cost=830.96..830.96 rows=16802 width=4)
                                  ->  Parallel Index Only Scan using users_pkey on users u  (cost=0.29..830.96 rows=16802 width=4)
-                     ->  Memoize  (cost=0.30..1.68 rows=1 width=4)
-                           Cache Key: u.id
+                     ->  Memoize  (cost=0.30..0.80 rows=1 width=4)
+                           Cache Key: c.userid
                            Cache Mode: logical
-                           ->  Index Scan using posts_owneruserid_fkey on posts p  (cost=0.29..1.67 rows=1 width=4)
-                                 Index Cond: (owneruserid = u.id)
+                           ->  Index Scan using posts_owneruserid_fkey on posts p  (cost=0.29..0.79 rows=1 width=4)
+                                 Index Cond: (owneruserid = c.userid)
                                  Filter: ((viewcount >= 0) AND (viewcount <= 2897) AND (commentcount >= 0) AND (commentcount <= 16) AND (favoritecount >= 0) AND (favoritecount <= 10))
  Optimizer: planner=Custom Hook joinorder=Dynamic Programming
-(19 rows)
+(18 rows)
 ```
 
-Notice that the optimizer selected different columns for the memoize node and below. These columns made an additional join
-filter column necessary. As a consequence, the hinted plan has almost 4x higher estimated cost that the original query plan.
-This discrepancy can only be changed by using significantly lower-level hints, which is something we currently do not plan on
-allowing (since it defeats the entire purpose of hints as an easy tool to influence the optimizer in the first place).
-Therefore, cost estimates should be used carefully in the presence of hints.
+While the plans are exactly the same, their cost estimates differ slightly. This is because the cardinality estimate of the
+index only scan on _users_ is lower for the hinted plan. Likewise, the planner could decide to perform lookups on a different
+index of the same relation or to use a different column as cache in a memoize node. The underlying cause of these issues is
+(most likely) that Postgres does not use costs as the only criteria to select access paths, which causes some of the
+optimization process to be order-dependent, i.e. if some candidate path already exists when adding a new path, the behavior
+might be different than if the first path was not stored. We do not intend to fix these issues since they would require a much
+more low-level hinting interface, defeating the motivation behind hints as a high-level tool.
 
 ### Hint parsing
 
