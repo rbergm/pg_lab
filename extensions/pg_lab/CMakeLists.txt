@@ -69,7 +69,6 @@ add_library(pg_lab MODULE
     src/pg_lab.cc
     src/hints.cc
     src/hint_parser.cc
-    src/path_gen.cc
     ${ANTLR_HintBlockGrammar_CXX_OUTPUTS})
 
 if(APPLE)
