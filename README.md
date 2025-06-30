@@ -1,7 +1,7 @@
 # pg_lab
 
 ![GitHub License](https://img.shields.io/github/license/rbergm/pg_lab)
-![Static Badge](https://img.shields.io/badge/version-0.2.0-blue)
+![Static Badge](https://img.shields.io/badge/version-0.2.1-blue)
 
 <p align="center">
   <img src="assets/pg_lab_logo.png" width="256" alt="The Logo of pg_lab: a blue elephant wearing a chemist's coat is surrounded by various reagents." />
