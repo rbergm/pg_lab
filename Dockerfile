@@ -44,4 +44,6 @@ RUN git clone --depth 1 --branch=feature/parallel-hints https://github.com/rberg
         ./postgres-setup.sh --stop --pg-ver ${PGVER} --remote-password ${USERNAME} ; \
     fi
 
+RUN echo "cd /pg_lab/ && source ./postgres-load-env.sh" >> /home/$USERNAME/.bashrc
+
 CMD ["/pg_lab/tools/docker-entrypoint.sh"]
