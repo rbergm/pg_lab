@@ -42,6 +42,7 @@ Since we are not ready for the 1.0 release yet, this does not matter right now.
 
 ### 🏥 Fixes
 - Added support for a bunch of missing path types to the hinting logic
+- 🐳 Fixed the Dockerfile using an old branch to install pg_lab
 
 ### 🪲 Known bugs
 - _None_

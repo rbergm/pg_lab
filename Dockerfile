@@ -37,7 +37,7 @@ RUN useradd -ms /bin/bash $USERNAME ; \
     usermod -aG sudo $USERNAME
 USER $USERNAME
 
-RUN git clone --depth 1 --branch=feature/parallel-hints https://github.com/rbergm/pg_lab /pg_lab ; \
+RUN git clone --depth 1 --branch=main https://github.com/rbergm/pg_lab /pg_lab ; \
     if [ "$DEBUG" = "true" ]; then \
         ./postgres-setup.sh --stop --pg-ver ${PGVER} --debug --remote-password ${USERNAME} ; \
     else \
