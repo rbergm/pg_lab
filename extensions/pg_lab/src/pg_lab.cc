@@ -358,8 +358,27 @@ path_satisfies_hints(Path *path, JoinOrder *join_node, Path **par_subpath, Path 
                 return path_satisfies_hints(lpath->subpath, join_node, par_subpath, path);
             }
 
+            case T_Result:
+            {
+                if (IsA(path, ProjectionPath))
+                {
+                    ProjectionPath *projpath = (ProjectionPath*) path;
+                    return path_satisfies_hints(projpath->subpath, join_node, par_subpath, path);
+                }
+                else if (IsA(path, ProjectSetPath))
+                {
+                    ProjectSetPath *projpath = (ProjectSetPath*) path;
+                    return path_satisfies_hints(projpath->subpath, join_node, par_subpath, path);
+                }
+                else
+                    ereport(ERROR, errmsg("[pg_lab] Cannot hint query. Result path is not supported: %s",
+                                          nodeToString(path)));
+                break;
+            }
+
             default:
-                ereport(ERROR, errmsg("[pg_lab] Cannot hint query. Path type is not supported"));
+                ereport(ERROR, errmsg("[pg_lab] Cannot hint query. Path type is not supported: %s",
+                                      nodeToString(path)));
                 break;
         }
     }
