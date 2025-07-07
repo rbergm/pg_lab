@@ -5,7 +5,7 @@ set -e  # exit on error
 WD=$(pwd)
 USER=$(whoami)
 PG_VER_PRETTY=16
-PG_VERSION=REL_16_STABLE
+PG_VERSION=REL_16_8
 PG_PATCH=$WD/pg-patches/pg_lab-pg16.patch
 PG_PATCH_DIR=$WD/pg-patches
 PG_TARGET_DIR="$WD/postgres-server"
@@ -37,7 +37,7 @@ while [ $# -gt 0 ] ; do
             case $2 in
                 16)
                     PG_VER_PRETTY="16"
-                    PG_VERSION=REL_16_STABLE
+                    PG_VERSION=REL_16_8
                     PG_PATCH=$PG_PATCH_DIR/pg_lab-pg16.patch
                     ;;
                 *)

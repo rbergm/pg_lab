@@ -15,14 +15,14 @@ index 71155f4..8f2d91b 100755
 --- a/configure
 +++ b/configure
 @@ -19371,7 +19371,7 @@ fi
- 
- 
+
+
  cat >>confdefs.h <<_ACEOF
 -#define PG_VERSION_STR "PostgreSQL $PG_VERSION on $host, compiled by $cc_string, `expr $ac_cv_sizeof_void_p \* 8`-bit"
 +#define PG_VERSION_STR "PostgreSQL $PG_VERSION with pg_lab on $host, compiled by $cc_string, `expr $ac_cv_sizeof_void_p \* 8`-bit"
  _ACEOF
- 
- 
+
+
 diff --git a/src/backend/commands/explain.c b/src/backend/commands/explain.c
 index 6c2e5c8..0fb38f1 100644
 --- a/src/backend/commands/explain.c
@@ -40,7 +40,7 @@ index 6c2e5c8..0fb38f1 100644
 @@ -54,6 +57,17 @@ explain_get_index_name_hook_type explain_get_index_name_hook = NULL;
  #define X_CLOSE_IMMEDIATE 2
  #define X_NOWHITESPACE 4
- 
+
 +char	  **current_planner_type = &PLANNER_TYPE_UNSET;
 +extern PGDLLIMPORT planner_hook_type planner_hook;
 +static planner_hook_type prev_planner_hook;
@@ -57,8 +57,8 @@ index 6c2e5c8..0fb38f1 100644
  							const char *queryString, ParamListInfo params,
 @@ -155,6 +169,57 @@ static void ExplainYAMLLineStarting(ExplainState *es);
  static void escape_yaml(StringInfo buf, const char *str);
- 
- 
+
+
 +char	   *PLANNER_TYPE_UNSET = "<unset>";
 +char	   *PLANNER_TYPE_CUSTOM = "Custom Hook";
 +char	   *PLANNER_TYPE_DEFAULT = "Standard";
@@ -110,12 +110,12 @@ index 6c2e5c8..0fb38f1 100644
 +	return result;
 +}
 +
- 
+
  /*
   * ExplainQuery -
 @@ -403,7 +468,23 @@ ExplainOneQuery(Query *query, int cursorOptions,
  		INSTR_TIME_SET_CURRENT(planstart);
- 
+
  		/* plan the query */
 -		plan = pg_plan_query(query, queryString, cursorOptions, params);
 +		prev_planner_hook = planner_hook;
@@ -135,7 +135,7 @@ index 6c2e5c8..0fb38f1 100644
 +			prev_join_search_hook = NULL;
 +		}
 +		PG_END_TRY();
- 
+
  		INSTR_TIME_SET_CURRENT(planduration);
  		INSTR_TIME_SUBTRACT(planduration, planstart);
 @@ -418,6 +499,25 @@ ExplainOneQuery(Query *query, int cursorOptions,
@@ -163,7 +163,7 @@ index 6c2e5c8..0fb38f1 100644
 +
  	}
  }
- 
+
 diff --git a/src/backend/main/main.c b/src/backend/main/main.c
 index ed11e8b..0c44aa8 100644
 --- a/src/backend/main/main.c
@@ -174,9 +174,9 @@ index ed11e8b..0c44aa8 100644
  {
 -	bool		do_check_root = true;
 +	bool		do_check_root = false;
- 
+
  	reached_main = true;
- 
+
 @@ -385,6 +385,8 @@ help(const char *progname)
  static void
  check_root(const char *progname)
@@ -193,7 +193,7 @@ index ef475d9..c56439d 100644
 @@ -154,6 +154,30 @@ bool		enable_partition_pruning = true;
  bool		enable_presorted_aggregate = true;
  bool		enable_async_append = true;
- 
+
 +cost_seqscan_hook_type cost_seqscan_hook = NULL;
 +cost_index_hook_type cost_index_hook = NULL;
 +cost_bitmap_heap_scan_hook_type cost_bitmap_heap_scan_hook = NULL;
@@ -490,7 +490,7 @@ index ef475d9..c56439d 100644
 +				   List *pathkeys, Cost input_cost, double tuples, int width,
 +				   Cost comparison_cost, int sort_mem,
 +				   double limit_tuples)
- 
+
  {
  	Cost		startup_cost;
 @@ -2425,6 +2647,28 @@ void
@@ -907,7 +907,7 @@ index ef475d9..c56439d 100644
 @@ -5001,6 +5541,33 @@ set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel)
  {
  	double		nrows;
- 
+
 +	if (set_baserel_size_estimates_hook)
 +	{
 +		nrows = (*set_baserel_size_estimates_hook) (root, rel);
@@ -937,11 +937,11 @@ index ef475d9..c56439d 100644
 +
  	/* Should only be applied to base relations */
  	Assert(rel->relid > 0);
- 
+
 @@ -5011,11 +5578,7 @@ set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel)
  							   JOIN_INNER,
  							   NULL);
- 
+
 -	rel->rows = clamp_row_est(nrows);
 -
 -	cost_qual_eval(&rel->baserestrictcost, rel->baserestrictinfo, root);
@@ -949,7 +949,7 @@ index ef475d9..c56439d 100644
 -	set_rel_width(root, rel);
 +	return nrows;
  }
- 
+
  /*
 @@ -5082,14 +5645,41 @@ set_joinrel_size_estimates(PlannerInfo *root, RelOptInfo *rel,
  						   SpecialJoinInfo *sjinfo,
@@ -999,7 +999,7 @@ index ef475d9..c56439d 100644
 +									   sjinfo, restrictlist);
 +	return nrows;
  }
- 
+
  /*
 diff --git a/src/backend/optimizer/path/joinpath.c b/src/backend/optimizer/path/joinpath.c
 index 9e488eb..8c1f680 100644
@@ -1117,9 +1117,9 @@ index 015a0b3..796755c 100644
 @@ -22,6 +22,7 @@
  #include "partitioning/partbounds.h"
  #include "utils/memutils.h"
- 
+
 +make_join_rel_hook_type make_join_rel_hook = NULL;
- 
+
  static void make_rels_by_clause_joins(PlannerInfo *root,
  									  RelOptInfo *old_rel,
 @@ -687,6 +688,23 @@ join_is_legal(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
@@ -1152,8 +1152,8 @@ index 7afd434..28984b8 100644
 +++ b/src/backend/optimizer/plan/planmain.c
 @@ -31,6 +31,8 @@
  #include "optimizer/planmain.h"
- 
- 
+
+
 +prepare_make_one_rel_hook_type prepare_make_one_rel_hook = NULL;
 +
  /*
@@ -1162,32 +1162,13 @@ index 7afd434..28984b8 100644
 @@ -272,6 +274,9 @@ query_planner(PlannerInfo *root,
  	 */
  	distribute_row_identity_vars(root);
- 
+
 +	if (prepare_make_one_rel_hook)
 +		prepare_make_one_rel_hook(root, joinlist);
 +
  	/*
  	 * Ready to do the primary planning.
  	 */
-diff --git a/src/backend/optimizer/plan/planner.c b/src/backend/optimizer/plan/planner.c
-index 0ab9bea..6e23581 100644
---- a/src/backend/optimizer/plan/planner.c
-+++ b/src/backend/optimizer/plan/planner.c
-@@ -333,10 +333,10 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
- 	 * MATERIALIZED VIEW to use parallel plans, but this is safe only because
- 	 * the command is writing into a completely new table which workers won't
- 	 * be able to see.  If the workers could see the table, the fact that
--	 * group locking would cause them to ignore the leader's heavyweight
--	 * GIN page locks would make this unsafe.  We'll have to fix that somehow
--	 * if we want to allow parallel inserts in general; updates and deletes
--	 * have additional problems especially around combo CIDs.)
-+	 * group locking would cause them to ignore the leader's heavyweight GIN
-+	 * page locks would make this unsafe.  We'll have to fix that somehow if
-+	 * we want to allow parallel inserts in general; updates and deletes have
-+	 * additional problems especially around combo CIDs.)
- 	 *
- 	 * We don't try to use parallel mode unless interruptible.  The leader
- 	 * expects ProcessInterrupts() calls to reach HandleParallelMessages().
 diff --git a/src/backend/optimizer/util/pathnode.c b/src/backend/optimizer/util/pathnode.c
 index bd02b7b..9c7c413 100644
 --- a/src/backend/optimizer/util/pathnode.c
@@ -1195,7 +1176,7 @@ index bd02b7b..9c7c413 100644
 @@ -44,6 +44,9 @@ typedef enum
  	COSTS_DIFFERENT				/* neither path dominates the other on cost */
  } PathCostComparison;
- 
+
 +add_path_hook_type add_path_hook = NULL;
 +add_partial_path_hook_type add_partial_path_hook = NULL;
 +
@@ -1205,7 +1186,7 @@ index bd02b7b..9c7c413 100644
 @@ -365,8 +368,26 @@ set_cheapest(RelOptInfo *parent_rel)
  	parent_rel->cheapest_parameterized_paths = parameterized_paths;
  }
- 
+
 +
  /*
   * add_path
@@ -1241,7 +1222,7 @@ index bd02b7b..9c7c413 100644
 @@ -711,6 +732,25 @@ add_path_precheck(RelOptInfo *parent_rel,
  	return true;
  }
- 
+
 +/*
 + * add_partial_path
 + *    Similar to add_path, but for partial paths.
@@ -1280,7 +1261,7 @@ index 458dc11..0eb961d 100644
 @@ -754,15 +754,6 @@ get_id(void)
  {
  	const char *username;
- 
+
 -#ifndef WIN32
 -	if (geteuid() == 0)			/* 0 is root's uid */
 -	{
@@ -1291,7 +1272,7 @@ index 458dc11..0eb961d 100644
 -#endif
 -
  	username = get_user_name_or_exit(progname);
- 
+
  	return pg_strdup(username);
 diff --git a/src/bin/pg_ctl/pg_ctl.c b/src/bin/pg_ctl/pg_ctl.c
 index fc160b0..b92333c 100644
@@ -1300,7 +1281,7 @@ index fc160b0..b92333c 100644
 @@ -2241,21 +2241,6 @@ main(int argc, char **argv)
  		}
  	}
- 
+
 -	/*
 -	 * Disallow running as root, to forestall any possible security holes.
 -	 */
@@ -1326,7 +1307,7 @@ index ca57713..aa8903c 100644
 @@ -324,22 +324,6 @@ main(int argc, char *argv[])
  		exit(1);
  	}
- 
+
 -	/*
 -	 * Don't allow pg_resetwal to be run as root, to avoid overwriting the
 -	 * ownership of files in the data directory. We need only check for root
@@ -1344,7 +1325,7 @@ index ca57713..aa8903c 100644
 -#endif
 -
  	get_restricted_token();
- 
+
  	/* Set mask based on PGDATA permissions */
 diff --git a/src/bin/pg_rewind/pg_rewind.c b/src/bin/pg_rewind/pg_rewind.c
 index 53110e0..e124e39 100644
@@ -1353,7 +1334,7 @@ index 53110e0..e124e39 100644
 @@ -261,22 +261,6 @@ main(int argc, char **argv)
  		exit(1);
  	}
- 
+
 -	/*
 -	 * Don't allow pg_rewind to be run as root, to avoid overwriting the
 -	 * ownership of files in the data directory. We need only check for root
@@ -1371,7 +1352,7 @@ index 53110e0..e124e39 100644
 -#endif
 -
  	get_restricted_token();
- 
+
  	/* Set mask based on PGDATA permissions */
 diff --git a/src/include/commands/explain.h b/src/include/commands/explain.h
 index 3d3e632..b6b3e71 100644
@@ -1380,7 +1361,7 @@ index 3d3e632..b6b3e71 100644
 @@ -126,4 +126,14 @@ extern void ExplainOpenGroup(const char *objtype, const char *labelname,
  extern void ExplainCloseGroup(const char *objtype, const char *labelname,
  							  bool labeled, ExplainState *es);
- 
+
 +extern PGDLLIMPORT char *PLANNER_TYPE_UNSET;
 +extern PGDLLIMPORT char *PLANNER_TYPE_CUSTOM;
 +extern PGDLLIMPORT char *PLANNER_TYPE_DEFAULT;
@@ -1399,7 +1380,7 @@ index 6cf4970..de64da0 100644
 @@ -72,6 +72,140 @@ extern PGDLLIMPORT bool enable_presorted_aggregate;
  extern PGDLLIMPORT bool enable_async_append;
  extern PGDLLIMPORT int constraint_exclusion;
- 
+
 +/* Hook for plugins to provide own cardinality estimates for base rels */
 +typedef double (*set_baserel_size_estimates_hook_type) (PlannerInfo *root, RelOptInfo *rel);
 +extern PGDLLIMPORT set_baserel_size_estimates_hook_type set_baserel_size_estimates_hook;
@@ -1551,7 +1532,7 @@ index 6cf4970..de64da0 100644
 @@ -212,4 +350,86 @@ extern PathTarget *set_pathtarget_cost_width(PlannerInfo *root, PathTarget *targ
  extern double compute_bitmap_pages(PlannerInfo *root, RelOptInfo *baserel,
  								   Path *bitmapqual, int loop_count, Cost *cost, double *tuple);
- 
+
 +/* Prototypes of default cost estimation functions */
 +extern void standard_cost_seqscan(Path *path, PlannerInfo *root, RelOptInfo *baserel,
 +								  ParamPathInfo *param_info);
@@ -1641,8 +1622,8 @@ index 001e75b..7fa7c8b 100644
 +++ b/src/include/optimizer/pathnode.h
 @@ -18,6 +18,12 @@
  #include "nodes/pathnodes.h"
- 
- 
+
+
 +typedef void (*add_path_hook_type) (RelOptInfo *parent_rel, Path *new_path);
 +extern add_path_hook_type add_path_hook;
 +
@@ -1664,7 +1645,7 @@ index 001e75b..7fa7c8b 100644
 +extern void standard_add_partial_path(RelOptInfo *parent_rel, Path *new_path);
  extern bool add_partial_path_precheck(RelOptInfo *parent_rel,
  									  Cost total_cost, List *pathkeys);
- 
+
 diff --git a/src/include/optimizer/paths.h b/src/include/optimizer/paths.h
 index 50bc3b5..97f5408 100644
 --- a/src/include/optimizer/paths.h
@@ -1672,17 +1653,17 @@ index 50bc3b5..97f5408 100644
 @@ -47,6 +47,9 @@ typedef RelOptInfo *(*join_search_hook_type) (PlannerInfo *root,
  											  List *initial_rels);
  extern PGDLLIMPORT join_search_hook_type join_search_hook;
- 
+
 +typedef RelOptInfo *(*make_join_rel_hook_type) (PlannerInfo *root,
 +												RelOptInfo *rel1, RelOptInfo *rel2);
 +extern PGDLLIMPORT make_join_rel_hook_type make_join_rel_hook;
- 
+
  extern RelOptInfo *make_one_rel(PlannerInfo *root, List *joinlist);
  extern RelOptInfo *standard_join_search(PlannerInfo *root, int levels_needed,
 @@ -97,6 +100,41 @@ extern void add_paths_to_joinrel(PlannerInfo *root, RelOptInfo *joinrel,
  								 JoinType jointype, SpecialJoinInfo *sjinfo,
  								 List *restrictlist);
- 
+
 +extern Path *get_memoize_path(PlannerInfo *root,
 +							  RelOptInfo *innerrel, RelOptInfo *outerrel,
 +							  Path *inner_path, Path *outer_path,
@@ -1737,7 +1718,7 @@ index 31c1881..58597f7 100644
 @@ -24,6 +24,10 @@ extern PGDLLIMPORT double cursor_tuple_fraction;
  /* query_planner callback to compute query_pathkeys */
  typedef void (*query_pathkeys_callback) (PlannerInfo *root, void *extra);
- 
+
 +/* callback for optimizer plugins before make_one_rel is called, but after root is initialized */
 +typedef void (*prepare_make_one_rel_hook_type) (PlannerInfo *root, List *joinlist);
 +extern PGDLLIMPORT prepare_make_one_rel_hook_type prepare_make_one_rel_hook;
