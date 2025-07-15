@@ -5,6 +5,7 @@ extern "C" {
 
 #include "postgres.h"
 #include "miscadmin.h"
+#include "fmgr.h"
 
 #include "commands/explain.h"
 #include "lib/stringinfo.h"
@@ -15,7 +16,6 @@ extern "C" {
 #include "optimizer/pathnode.h"
 #include "optimizer/planmain.h"
 #include "optimizer/planner.h"
-#include "fmgr.h"
 #include "utils/guc.h"
 #include "utils/hsearch.h"
 
@@ -149,16 +149,6 @@ static PlannerInfo  *current_planner_root = NULL;
 /* The hints that are available for the current query. */
 static PlannerHints *current_hints = NULL;
 
-/* utility macros inspired by nodeTag and IsA from nodes.h */
-#define pathTag(pathptr) (((const Path*)pathptr)->pathtype)
-#define PathIsA(nodeptr,_type_) (pathTag(nodeptr) == T_ ## _type_)
-#define IsAScanPath(pathptr) (PathIsA(pathptr, SeqScan) || \
-                              PathIsA(pathptr, IndexScan) || \
-                              PathIsA(pathptr, IndexOnlyScan) || \
-                              PathIsA(pathptr, BitmapHeapScan))
-#define IsAJoinPath(pathptr) (PathIsA(pathptr, NestLoop) || PathIsA(pathptr, MergeJoin) || PathIsA(pathptr, HashJoin))
-#define IsAIntermediatePath(pathptr) (PathIsA(pathptr, Memoize) || PathIsA(pathptr, Material))
-#define IsAParPath(pathptr) (PathIsA(pathptr, Gather) || PathIsA(pathptr, GatherMerge))
 #define PathRelids(pathptr) (pathptr->parent->relids == NULL /* this is true for upper rels */ \
                              ? current_planner_root->all_baserels \
                              : pathptr->parent->relids)
@@ -542,9 +532,39 @@ check_all_hints(PlannerInfo *root, RelOptInfo *rel, Path *path, bool force_paral
     JoinOrder *join_order;
     Path *par_subpath;
     bool satisfies_hints;
+    bool matching_prefix, all_prefixes_disjunct;
 
     if (!current_hints || !current_hints->contains_hint)
         return true;
+
+    matching_prefix = false;
+    all_prefixes_disjunct = true;
+    if (current_hints->join_prefixes && bms_num_members(root->all_baserels) > 1)
+    {
+        ListCell *lc;
+
+        foreach (lc, current_hints->join_prefixes)
+        {
+            JoinOrder *prefix = (JoinOrder *) lfirst(lc);
+            JoinOrder_Comparison cmp;
+
+            cmp = join_order_compare(prefix, path, current_planner_root->all_baserels);
+            if (cmp == JO_EQUAL)
+            {
+                matching_prefix = true;
+                all_prefixes_disjunct = false;
+                break;
+            }
+            else if (cmp == JO_DIFFERENT)
+            {
+                all_prefixes_disjunct = false;
+                continue;
+            }
+        }
+    }
+
+    if (!all_prefixes_disjunct && !matching_prefix)
+        return false;
 
     join_order = current_hints->join_order_hint
                  ? traverse_join_order(current_hints->join_order_hint, PathRelids(path))
@@ -646,7 +666,7 @@ extern "C" bool
 hint_aware_add_path_precheck(RelOptInfo *parent_rel, Cost startup_cost, Cost total_cost,
                              List *pathkeys, Relids required_outer)
 {
-    if (current_hints && (current_hints->join_order_hint || current_hints->operator_hints))
+    if (current_hints && (current_hints->join_order_hint || current_hints->join_prefixes || current_hints->operator_hints))
         /* XXX: we could be smarter and try to check, whether there actually is a hint concerning the current path */
         return true;
 
@@ -664,7 +684,7 @@ hint_aware_add_path_precheck(RelOptInfo *parent_rel, Cost startup_cost, Cost tot
 extern "C" bool
 hint_aware_add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost, List *pathkeys)
 {
-    if (current_hints && (current_hints->join_order_hint || current_hints->operator_hints))
+    if (current_hints && (current_hints->join_order_hint || current_hints->join_prefixes || current_hints->operator_hints))
         /* XXX: we could be smarter and try to check, whether there actually is a hint concerning the current path */
         return true;
 
@@ -694,9 +714,10 @@ hint_aware_add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost, Li
 extern "C" void
 hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
 {
-    Path        *par_subpath;
-    JoinOrder   *join_order;
-    bool         keep_new;
+    Path      *par_subpath;
+    JoinOrder *join_order;
+    bool       keep_new;
+    bool       matching_prefix, all_prefixes_disjunct;
 
     if (!current_hints || !current_hints->contains_hint || parent_rel->pathlist == NIL)
     {
@@ -708,6 +729,39 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
     }
 
     /* We first check for structural compatibility with our hints. */
+
+    matching_prefix = false;
+    all_prefixes_disjunct = true;
+    if (current_hints->join_prefixes && bms_num_members(parent_rel->relids) > 1)
+    {
+        ListCell *lc;
+
+        foreach (lc, current_hints->join_prefixes)
+        {
+            JoinOrder *prefix = (JoinOrder *) lfirst(lc);
+            JoinOrder_Comparison cmp;
+
+            cmp = join_order_compare(prefix, new_path, current_planner_root->all_baserels);
+            if (cmp == JO_EQUAL)
+            {
+                matching_prefix = true;
+                all_prefixes_disjunct = false;
+                break;
+            }
+            else if (cmp == JO_DIFFERENT)
+            {
+                all_prefixes_disjunct = false;
+                continue;
+            }
+        }
+    }
+
+    if (!all_prefixes_disjunct && !matching_prefix)
+    {
+        FreePath(new_path);
+        return;
+    }
+
 
     join_order = current_hints->join_order_hint != NULL
                  ? traverse_join_order(current_hints->join_order_hint, PathRelids(new_path))
@@ -749,6 +803,8 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
         FreePath(new_path);
 
     /*
+     *
+     * OUTDATED
      * At this point we know that the new path at least satisfies the hints regarding join, scan and intermediate
      * operators. It is also on the hinted join order.
      *
@@ -781,6 +837,7 @@ hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *new_path)
 {
     JoinOrder *join_order;
     bool keep_new;
+    bool matching_prefix, all_prefixes_disjunct;
 
     if (!current_hints || !current_hints->contains_hint || parent_rel->partial_pathlist == NIL)
     {
@@ -792,6 +849,38 @@ hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *new_path)
     }
 
     if (current_hints->parallel_mode == PARMODE_SEQUENTIAL)
+    {
+        FreePath(new_path);
+        return;
+    }
+
+    matching_prefix = false;
+    all_prefixes_disjunct = true;
+    if (current_hints->join_prefixes && bms_num_members(parent_rel->relids) > 1)
+    {
+        ListCell *lc;
+
+        foreach (lc, current_hints->join_prefixes)
+        {
+            JoinOrder *prefix = (JoinOrder *) lfirst(lc);
+            JoinOrder_Comparison cmp;
+
+            cmp = join_order_compare(prefix, new_path, current_planner_root->all_baserels);
+            if (cmp == JO_EQUAL)
+            {
+                matching_prefix = true;
+                all_prefixes_disjunct = false;
+                break;
+            }
+            else if (cmp == JO_DIFFERENT)
+            {
+                all_prefixes_disjunct = false;
+                continue;
+            }
+        }
+    }
+
+    if (!all_prefixes_disjunct && !matching_prefix)
     {
         FreePath(new_path);
         return;

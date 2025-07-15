@@ -6,6 +6,7 @@ hint_block : HBLOCK_START hints* HBLOCK_END EOF ;
 hints
     : setting_hint
     | join_order_hint
+    | join_prefix_hint
     | operator_hint
     | cardinality_hint
     | cost_hint
@@ -35,6 +36,10 @@ parallelization_setting
 
 join_order_hint
     : JOINORDER LPAREN join_order_entry RPAREN
+    ;
+
+join_prefix_hint
+    : JOINPREFIX LPAREN join_order_entry RPAREN
     ;
 
 join_order_entry
@@ -129,6 +134,7 @@ PARALLEL    : 'parallel'    ;
 
 // Top-level hints
 JOINORDER   : 'JoinOrder'   ;
+JOINPREFIX  : 'JoinPrefix'  ;
 CARD        : 'Card'        ;
 
 // Operators

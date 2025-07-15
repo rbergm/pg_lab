@@ -1,12 +1,14 @@
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #include <limits.h>
 #include <math.h>
 
-#include "hints.h"
+#include "postgres.h"
+#include "miscadmin.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+#include "hints.h"
 
 const char *
 PhysicalOperatorToString(PhysicalOperator op)
@@ -45,6 +47,8 @@ traverse_join_order(JoinOrder *join_order, Relids node)
 {
     JoinOrder *result;
 
+    check_stack_depth();
+
     if (bms_equal(join_order->relids, node))
         result = join_order;
     else  if (join_order->node_type == BASE_REL)
@@ -61,6 +65,157 @@ traverse_join_order(JoinOrder *join_order, Relids node)
     }
 
     return result;
+}
+
+JoinOrder_Comparison
+join_order_compare(JoinOrder *prefix, Path *path, Relids all_rels)
+{
+    Relids path_relids;
+    BMS_Comparison relid_cmp;
+    Relids common_rels;
+
+    check_stack_depth();
+
+    path_relids = path->parent->relids;
+    path_relids = path_relids == NULL ? all_rels : path_relids;  /* upper rels have no relids*/
+
+    relid_cmp = bms_subset_compare(prefix->relids, path_relids);
+    common_rels = bms_intersect(prefix->relids, path_relids);
+    if (relid_cmp == BMS_DIFFERENT && common_rels)
+        return JO_DIFFERENT;
+    if (relid_cmp == BMS_DIFFERENT)
+        return JO_DISJOINT;
+
+    if (relid_cmp == BMS_SUBSET2)
+    {
+        /*
+         * Join order is a superset of the path's relids. The path is apparently still being built, but we need to make sure
+         * that it can eventually become part of the join prefix.
+         */
+
+        JoinOrder *sub_prefix;
+        sub_prefix = traverse_join_order(prefix, path_relids);
+        return sub_prefix == NULL ? JO_DIFFERENT : join_order_compare(sub_prefix, path, all_rels);
+    }
+
+    if (prefix->node_type == BASE_REL)
+        return relid_cmp == BMS_EQUAL ? JO_EQUAL : JO_DIFFERENT;
+
+
+    /*
+     * At this point we might either have a larger path that does (or does not) contain our prefix, or our prefix is exactly
+     * as large as the path. It doesn't really matter which is the case, we still need to traverse the path to check all of its
+     * children.
+     */
+
+    if (IsAJoinPath(path) && relid_cmp == BMS_SUBSET1)
+    {
+        /* join prefix is contained in the join path (or not), we need to "fast forward" */
+        JoinPath *jpath = (JoinPath *) path;
+
+        if (bms_is_subset(prefix->relids, jpath->outerjoinpath->parent->relids))
+            return join_order_compare(prefix, jpath->outerjoinpath, all_rels);
+        else if (bms_is_subset(prefix->relids, jpath->innerjoinpath->parent->relids))
+            return join_order_compare(prefix, jpath->innerjoinpath, all_rels);
+        else
+            /* The tables of our prefix are scattered across different branches in the path. This violates the prefix. */
+            return JO_DIFFERENT;
+    }
+    else if (IsAJoinPath(path))
+    {
+        JoinPath *jpath = (JoinPath *) path;
+        JoinOrder_Comparison outer_cmp, inner_cmp;
+        Assert(relid_cmp == BMS_EQUAL);
+
+        outer_cmp = join_order_compare(prefix, jpath->outerjoinpath, all_rels);
+        if (outer_cmp != JO_EQUAL)
+            return JO_DIFFERENT;
+
+        inner_cmp = join_order_compare(prefix, jpath->innerjoinpath, all_rels);
+        return inner_cmp == JO_EQUAL ? JO_EQUAL : JO_DIFFERENT;
+    }
+
+    /* We have some sort of intermediate path node, just skip through it and continue with the normal prefix validation */
+    switch (path->pathtype)
+    {
+        case T_Gather:
+        {
+            GatherPath *gpath = (GatherPath*) path;
+            return join_order_compare(prefix, gpath->subpath, all_rels);
+        }
+
+        case T_GatherMerge:
+        {
+            GatherMergePath *gpath = (GatherMergePath*) path;
+            return join_order_compare(prefix, gpath->subpath, all_rels);
+        }
+
+        case T_Memoize:
+        {
+            MemoizePath *mempath = (MemoizePath*) path;
+            return join_order_compare(prefix, mempath->subpath, all_rels);
+        }
+
+        case T_Material:
+        {
+            MaterialPath *matpath = (MaterialPath*) path;
+            return join_order_compare(prefix, matpath->subpath, all_rels);
+        }
+
+        case T_Sort:
+        {
+            SortPath *spath = (SortPath*) path;
+            return join_order_compare(prefix, spath->subpath, all_rels);
+        }
+
+        case T_IncrementalSort:
+        {
+            IncrementalSortPath *spath = (IncrementalSortPath*) path;
+            return join_order_compare(prefix, spath->spath.subpath, all_rels);
+        }
+
+        case T_Group:
+        {
+            GroupPath *gpath = (GroupPath*) path;
+            return join_order_compare(prefix, gpath->subpath, all_rels);
+        }
+
+        case T_Agg:
+        {
+            AggPath *apath = (AggPath*) path;
+            return join_order_compare(prefix, apath->subpath, all_rels);
+        }
+
+        case T_Limit:
+        {
+            LimitPath *lpath = (LimitPath*) path;
+            return join_order_compare(prefix, lpath->subpath, all_rels);
+        }
+
+        case T_Result:
+        {
+            if (IsA(path, ProjectionPath))
+            {
+                ProjectionPath *projpath = (ProjectionPath*) path;
+                return join_order_compare(prefix, projpath->subpath, all_rels);
+            }
+            else if (IsA(path, ProjectSetPath))
+            {
+                ProjectSetPath *projpath = (ProjectSetPath*) path;
+                return join_order_compare(prefix, projpath->subpath, all_rels);
+            }
+            else
+                ereport(ERROR, errmsg("[pg_lab] Cannot check prefix query. Result path is not supported: %s",
+                                        nodeToString(path)));
+            break;
+        }
+
+        default:
+            ereport(ERROR, errmsg("[pg_lab] Cannot hint query. Path type is not supported: %s",
+                                    nodeToString(path)));
+            break;
+    }
+
 }
 
 bool
@@ -234,7 +389,7 @@ relnames_to_string(List *relnames)
 
     appendStringInfoChar(&buf, ')');
     result = pstrdup(buf.data);
-    
+
     return result;
 }
 
@@ -250,6 +405,7 @@ init_hints(const char *raw_query)
     hints->mode = HINTMODE_ANCHORED;
     hints->parallel_mode = PARMODE_DEFAULT;
     hints->join_order_hint = NULL;
+    hints->join_prefixes = NIL;
     hints->operator_hints = NULL;
     hints->cardinality_hints = NULL;
     hints->cost_hints = NULL;
@@ -268,6 +424,8 @@ free_hints(PlannerHints *hints)
 
     if (hints->join_order_hint)
         free_join_order(hints->join_order_hint);
+
+    list_free_deep(hints->join_prefixes);
 
     hash_destroy(hints->operator_hints);
     hash_destroy(hints->cardinality_hints);
@@ -349,7 +507,7 @@ MakeOperatorHint(PlannerInfo *root, PlannerHints *hints, List *rels,
     {
         /* The hint could already exist if we parsed a Memoize/Materialize hint before */
         op_hint->op = op;
-        
+
         if (!isnan(par_workers))
             op_hint->parallel_workers = par_workers;
     }
@@ -370,7 +528,7 @@ MakeOperatorHint(PlannerInfo *root, PlannerHints *hints, List *rels,
 }
 
 void
-MakeIntermediateOpHint(PlannerInfo *root, PlannerHints *hints, List *rels, 
+MakeIntermediateOpHint(PlannerInfo *root, PlannerHints *hints, List *rels,
                        bool materialize, bool memoize, float par_workers)
 {
     OperatorHint *op_hint;
@@ -431,7 +589,7 @@ MakeCardHint(PlannerInfo *root, PlannerHints *hints, List *rels, Cardinality car
     Relids relids;
 
     hints->contains_hint = true;
-    
+
     if (!hints->cardinality_hints)
     {
         HASHCTL hctl;

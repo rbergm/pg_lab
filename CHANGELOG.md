@@ -29,10 +29,11 @@ Since we are not ready for the 1.0 release yet, this does not matter right now.
 
 ---
 
-# ➡ Version 0.2.2 _(planned)_
+# ➡ Version 0.3.0 _(planned)_
 
 ### 🐣 New features
-- _None_
+- Support for partial join orders using the new `JoinPrefix` hint. Each hint block can contain multiple prefixes, the resulting
+  query plan must start with the given joins as outlined.
 
 ### 💀 Breaking changes
 - _None_

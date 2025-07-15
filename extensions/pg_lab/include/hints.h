@@ -16,6 +16,20 @@ extern "C" {
 #define InvalidIndex -1
 #define EMPTY_BITMAP NULL
 
+/* utility macros inspired by nodeTag and IsA from nodes.h */
+#define pathTag(pathptr) (((const Path*)pathptr)->pathtype)
+#define PathIsA(nodeptr,_type_) (pathTag(nodeptr) == T_ ## _type_)
+#define IsAScanPath(pathptr) (PathIsA(pathptr, SeqScan) || \
+                              PathIsA(pathptr, IndexScan) || \
+                              PathIsA(pathptr, IndexOnlyScan) || \
+                              PathIsA(pathptr, BitmapHeapScan) || \
+                              PathIsA(pathptr, TidScan) || \
+                              PathIsA(pathptr, TidRangePath))
+#define IsAJoinPath(pathptr) (PathIsA(pathptr, NestLoop) || PathIsA(pathptr, MergeJoin) || PathIsA(pathptr, HashJoin))
+#define IsAIntermediatePath(pathptr) (PathIsA(pathptr, Memoize) || PathIsA(pathptr, Material))
+#define IsAParPath(pathptr) (PathIsA(pathptr, Gather) || PathIsA(pathptr, GatherMerge))
+
+
 /* The query currently being optimized/executed. */
 extern char *current_query_string;
 
@@ -85,9 +99,17 @@ typedef struct JoinOrder
     JoinOrder    *parent_node; /* NULL for root node */
 } JoinOrder;
 
+typedef enum JoinOrder_Comparison
+{
+    JO_DISJOINT,
+    JO_EQUAL,
+    JO_DIFFERENT
+} JoinOrder_Comparison;
+
 #define IsRootNode(join_order) ((join_order)->parent_node == NULL)
 
 extern JoinOrder* traverse_join_order(JoinOrder *join_order, Relids node);
+extern JoinOrder_Comparison join_order_compare(JoinOrder *prefix, Path *path, Relids all_rels);
 extern bool is_linear_join_order(JoinOrder *join_order);
 extern void free_join_order(JoinOrder *join_order);
 
@@ -155,6 +177,8 @@ typedef struct PlannerHints
     ParallelMode parallel_mode;
 
     JoinOrder *join_order_hint;
+
+    List *join_prefixes;
 
     struct HTAB *operator_hints;
 

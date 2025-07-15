@@ -62,6 +62,9 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
 
         void enterJoin_order_hint(pg_lab::HintBlockParser::Join_order_hintContext *ctx) override
         {
+            if (hints_->join_prefixes)
+                ereport(ERROR, errmsg("Cannot combine JoinOrder hint with JoinPrefix hint"));
+
             auto join_order = this->ParseJoinOrder(ctx->join_order_entry());
             hints_->join_order_hint = join_order;
             hints_->contains_hint = true;
@@ -74,12 +77,22 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
             destroyStringInfo(joinorder_debug);
 
             #endif
-            
+
+        }
+
+        void enterJoin_prefix_hint(pg_lab::HintBlockParser::Join_prefix_hintContext *ctx) override
+        {
+            if (hints_->join_order_hint)
+                ereport(ERROR, errmsg("Cannot combine JoinPrefix hint with JoinOrder hint"));
+
+            auto join_order = this->ParseJoinOrder(ctx->join_order_entry());
+            hints_->join_prefixes = lappend(hints_->join_prefixes, join_order);
+            hints_->contains_hint = true;
         }
 
         void enterJoin_op_hint(pg_lab::HintBlockParser::Join_op_hintContext *ctx) override
         {
-            
+
             List *relnames = NIL;
             for (const auto &rel_ctx : ctx->binary_rel_id()->relation_id())
             {
@@ -92,8 +105,8 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
                 auto relname = pstrdup(rel_ctx->getText().c_str());
                 relnames = lappend(relnames, relname);
             }
-            
-            
+
+
             PhysicalOperator op = OP_UNKNOWN;
             if (ctx->NESTLOOP())
                 op = OP_NESTLOOP;
@@ -115,7 +128,7 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
         void enterScan_op_hint(pg_lab::HintBlockParser::Scan_op_hintContext *ctx) override {
             auto relname = pstrdup(ctx->relation_id()->getText().c_str());
             List *relnames = list_make1(relname);
-            
+
             PhysicalOperator op = OP_UNKNOWN;
             if (ctx->SEQSCAN())
                 op = OP_SEQSCAN;
