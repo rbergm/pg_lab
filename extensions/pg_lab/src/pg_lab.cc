@@ -8,6 +8,7 @@ extern "C" {
 #include "fmgr.h"
 
 #include "commands/explain.h"
+#include "executor/executor.h"
 #include "lib/stringinfo.h"
 #include "nodes/bitmapset.h"
 #include "optimizer/cost.h"
@@ -105,6 +106,9 @@ extern "C" {
     extern final_cost_mergejoin_hook_type final_cost_mergejoin_hook;
     static final_cost_mergejoin_hook_type prev_final_cost_mergejoin_hook = NULL;
 
+    extern ExecutorEnd_hook_type ExecutorEnd_hook;
+    static ExecutorEnd_hook_type prev_executor_end_hook = NULL;
+
     extern char **current_planner_type;
     extern char **current_join_ordering_type;
 
@@ -132,6 +136,7 @@ extern "C" {
                                                            JoinCostWorkspace *workspace,
                                                            JoinPathExtraData *extra);
 
+    extern PGDLLEXPORT void hint_aware_ExecutorEnd(QueryDesc *queryDesc);
 }
 
 static bool enable_pglab = true;
@@ -606,12 +611,29 @@ hint_aware_planner(Query* parse, const char* query_string, int cursorOptions, Pa
         result = standard_planner(parse, query_string, cursorOptions, boundParams);
     }
 
+    return result;
+}
+
+extern "C" void
+hint_aware_ExecutorEnd(QueryDesc *queryDesc)
+{
+    ListCell *lc;
+
+    foreach (lc, current_hints->post_opt_gucs)
+    {
+        TempGUC *temp_guc = (TempGUC *) lfirst(lc);
+        SetConfigOption(temp_guc->guc_name, temp_guc->guc_value, PGC_USERSET, PGC_S_SESSION);
+    }
+
     /* we let the context-based memory manager of PG take care of properly freeing our stuff */
     current_hints        = NULL;
     current_planner_root = NULL;
     current_query_string = NULL;
 
-    return result;
+    if (prev_executor_end_hook)
+        prev_executor_end_hook(queryDesc);
+    else
+        standard_ExecutorEnd(queryDesc);
 }
 
 /*
@@ -622,6 +644,7 @@ extern "C" void
 hint_aware_make_one_rel_prep(PlannerInfo *root, List *joinlist)
 {
     PlannerHints *hints;
+    ListCell *lc;
 
     if (!enable_pglab)
     {
@@ -633,6 +656,12 @@ hint_aware_make_one_rel_prep(PlannerInfo *root, List *joinlist)
     hints = init_hints(current_query_string);
     parse_hint_block(root, hints);
     post_process_hint_block(hints);
+
+    foreach (lc, hints->pre_opt_gucs)
+    {
+        TempGUC *temp_guc = (TempGUC *) lfirst(lc);
+        SetConfigOption(temp_guc->guc_name, temp_guc->guc_value, PGC_USERSET, PGC_S_SESSION);
+    }
 
     if (prev_prepare_make_one_rel_hook)
         prev_prepare_make_one_rel_hook(root, joinlist);
@@ -1535,19 +1564,33 @@ _PG_init(void)
     initial_cost_mergejoin_hook = hint_aware_intial_cost_mergejoin;
     prev_final_cost_mergejoin_hook = final_cost_mergejoin_hook;
     final_cost_mergejoin_hook = hint_aware_final_cost_mergejoin;
+
+    prev_executor_end_hook = ExecutorEnd_hook;
+    ExecutorEnd_hook = hint_aware_ExecutorEnd;
 }
 
 extern "C" void
 _PG_fini(void)
 {
-    /* XXX */
     planner_hook = prev_planner_hook;
     prepare_make_one_rel_callback = prev_prepare_make_one_rel_hook;
     final_path_callback = prev_final_path_callback;
     join_search_hook = prev_join_search_hook;
-    set_rel_pathlist_hook = prev_rel_pathlist_hook;
-    set_join_pathlist_hook = prev_join_pathlist_hook;
+    add_path_hook = prev_add_path_hook;
+    add_partial_path_hook = prev_add_partial_path_hook;
+    add_path_precheck_hook = prev_add_path_precheck_hook;
+    add_partial_path_precheck_hook = prev_add_partial_path_precheck_hook;
     set_baserel_size_estimates_hook = prev_baserel_size_estimates_hook;
     set_joinrel_size_estimates_hook = prev_joinrel_size_estimates_hook;
+    cost_seqscan_hook = prev_cost_seqscan_hook;
+    cost_index_hook = prev_cost_index_hook;
+    cost_bitmap_heap_scan_hook = prev_cost_bitmap_heap_scan_hook;
+    initial_cost_nestloop_hook = prev_initial_cost_nestloop_hook;
+    final_cost_nestloop_hook = prev_final_cost_nestloop_hook;
+    initial_cost_hashjoin_hook = prev_initial_cost_hashjoin_hook;
+    final_cost_hashjoin_hook = prev_final_cost_hashjoin_hook;
+    initial_cost_mergejoin_hook = prev_initial_cost_mergejoin_hook;
+    final_cost_mergejoin_hook = prev_final_cost_mergejoin_hook;
     compute_parallel_worker_hook = prev_compute_parallel_workers_hook;
+    ExecutorEnd_hook = prev_executor_end_hook;
 }

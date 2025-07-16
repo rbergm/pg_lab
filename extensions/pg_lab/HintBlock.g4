@@ -10,6 +10,7 @@ hints
     | operator_hint
     | cardinality_hint
     | cost_hint
+    | guc_hint
     ;
 
 setting_hint
@@ -98,11 +99,21 @@ binary_rel_id
     ;
 
 relation_id
-    : REL_ID
+    : IDENTIFIER
     ;
 
 cost
     : FLOAT
+    | INT
+    ;
+
+guc_hint
+    : SET LPAREN IDENTIFIER EQ QUOTE guc_value QUOTE RPAREN
+    ;
+
+guc_value
+    : IDENTIFIER
+    | FLOAT
     | INT
     ;
 
@@ -120,6 +131,7 @@ HASH         : '#'          ;
 EQ           : '='          ;
 DOT          : '.'          ;
 SEM          : ';'          ;
+QUOTE        : '\''         ;
 DEFAULT      : 'default'    ;
 
 // Config
@@ -130,6 +142,7 @@ ANCHORED    : 'anchored'    ;
 PARMODE     : 'exec_mode'   ;
 SEQUENTIAL  : 'sequential'  ;
 PARALLEL    : 'parallel'    ;
+SET         : 'Set'         ;
 
 
 // Top-level hints
@@ -156,7 +169,7 @@ WORKERS     : 'Workers'     ;
 FORCED      : 'Forced'      ;
 
 
-REL_ID      : [a-z_][a-z_0-9]*  ;
+IDENTIFIER  : [a-z_][a-z_0-9]*  ;
 FLOAT       : [0-9]+ DOT [0-9]+ ;
 INT         : [0-9]+            ;
 

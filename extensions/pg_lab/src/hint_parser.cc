@@ -183,6 +183,14 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
             list_free_deep(relnames);
         }
 
+        void enterGuc_hint(pg_lab::HintBlockParser::Guc_hintContext *ctx) override
+        {
+            char *guc_name = pstrdup(ctx->IDENTIFIER()->getText().c_str());
+            char *guc_value = pstrdup(ctx->guc_value()->getText().c_str());
+
+            MakeGUCHint(hints_, guc_name, guc_value);
+        }
+
     private:
         PlannerInfo  *root_;
         PlannerHints *hints_;

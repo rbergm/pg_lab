@@ -164,6 +164,12 @@ typedef struct CostHint
     } costs;
 } CostHint;
 
+typedef struct TempGUC
+{
+    char *guc_name;
+    char *guc_value;
+} TempGUC;
+
 typedef struct PlannerHints
 {
     char *raw_query;
@@ -191,6 +197,11 @@ typedef struct PlannerHints
     int parallel_workers;
 
     bool parallelize_entire_plan;
+
+    List *pre_opt_gucs;
+
+    List *post_opt_gucs;
+
 } PlannerHints;
 
 
@@ -211,6 +222,8 @@ extern void MakeCostHint(PlannerInfo *root, PlannerHints *hints, List *rels,
 
 extern JoinOrder* MakeJoinOrderIntermediate(PlannerInfo *root, JoinOrder *outer_child, JoinOrder *inner_child);
 extern JoinOrder* MakeJoinOrderBase(PlannerInfo *root, const char *relname);
+
+extern void MakeGUCHint(PlannerHints *hints, const char *guc_name, const char *guc_value);
 
 #ifdef __cplusplus
 } // extern "C"

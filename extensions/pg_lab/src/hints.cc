@@ -7,6 +7,7 @@ extern "C" {
 
 #include "postgres.h"
 #include "miscadmin.h"
+#include "utils/guc.h"
 
 #include "hints.h"
 
@@ -402,16 +403,23 @@ init_hints(const char *raw_query)
     hints->raw_query = pstrdup(raw_query);
     hints->contains_hint = false;
     hints->raw_hint = NULL;
+
     hints->mode = HINTMODE_ANCHORED;
     hints->parallel_mode = PARMODE_DEFAULT;
+
     hints->join_order_hint = NULL;
     hints->join_prefixes = NIL;
+
     hints->operator_hints = NULL;
     hints->cardinality_hints = NULL;
     hints->cost_hints = NULL;
+
     hints->parallel_rels = EMPTY_BITMAP;
     hints->parallel_workers = 0;
     hints->parallelize_entire_plan = false;
+
+    hints->pre_opt_gucs = NIL;
+    hints->post_opt_gucs = NIL;
 
     return hints;
 }
@@ -754,6 +762,33 @@ MakeJoinOrderBase(PlannerInfo *root, const char *relname)
     join_order->parent_node = NULL;
 
     return join_order;
+}
+
+void MakeGUCHint(PlannerHints *hints, const char *guc_name, const char *guc_value)
+{
+    TempGUC *set_guc, *reset_guc;
+    const char *current_val;
+
+    current_val = GetConfigOption(guc_name, true, true);
+    if (current_val == NULL)
+    {
+        ereport(WARNING,
+                (errcode(ERRCODE_UNDEFINED_OBJECT),
+                 errmsg("GUC \"%s\" does not exist, cannot set hint", guc_name)));
+        return;
+    }
+
+    set_guc = (TempGUC *) palloc0(sizeof(TempGUC));
+    set_guc->guc_name = pstrdup(guc_name);
+    set_guc->guc_value = pstrdup(guc_value);
+
+    reset_guc = (TempGUC *) palloc0(sizeof(TempGUC));
+    reset_guc->guc_name = pstrdup(guc_name);
+    reset_guc->guc_value = pstrdup(current_val);
+
+    hints->pre_opt_gucs = lappend(hints->pre_opt_gucs, set_guc);
+    hints->post_opt_gucs = lappend(hints->post_opt_gucs, reset_guc);
+    hints->contains_hint = true;
 }
 
 #ifdef __cplusplus
