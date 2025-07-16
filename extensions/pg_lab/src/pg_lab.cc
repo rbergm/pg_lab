@@ -7,6 +7,7 @@ extern "C" {
 #include "miscadmin.h"
 #include "fmgr.h"
 
+#include "access/parallel.h"
 #include "commands/explain.h"
 #include "executor/executor.h"
 #include "lib/stringinfo.h"
@@ -618,6 +619,16 @@ extern "C" void
 hint_aware_ExecutorEnd(QueryDesc *queryDesc)
 {
     ListCell *lc;
+
+    if (IsParallelWorker())
+    {
+        if (prev_executor_end_hook)
+            prev_executor_end_hook(queryDesc);
+        else
+            standard_ExecutorEnd(queryDesc);
+        return;
+    }
+
 
     foreach (lc, current_hints->post_opt_gucs)
     {

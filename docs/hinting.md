@@ -44,6 +44,8 @@ This behavior can be disabled by setting `pg_lab.check_final_path` to _off_.
 | `Card` | Overwrites the native cardinality estimate for a specific intermediate. | `Card(t mi ci #42000)` |
 | Physical operators, e.g., `HashJoin` | Control the access paths for specific intermediates | `IdxScan(t)`, `MergeJoin(t mi)` |
 | `JoinOrder` | Sets the join tree for the query | `JoinOrder(((t mi) ci))` |
+| `JoinPrefix` | Configures the initial joins in a query, i.e. the leaf-portion of the join tree | `JoinPrefix((t mi))` |
+| `Set` | Makes temporary adjustments to GUC parameters | `Set(enable_nestloop = 'off')` |
 
 Hints are case-insensitive and you can even change casing within a hint (e.g., `CONFIG(plan_mode=FULL)`). Whether you
 should do this is of course another question.
@@ -416,6 +418,36 @@ imdb-# WHERE t.production_year > 2000;
                      ->  Parallel Hash  (cost=709675.83..709675.83 rows=26457483 width=4)
                            ->  Parallel Seq Scan on cast_info ci  (cost=0.00..709675.83 rows=26457483 width=4)
 ```
+
+### Join prefix
+
+In addition to forcing the entire join order using the [`JoinOrder` hint](#join-order), it is also possible to only enforce
+the initial joins in a plan. These initial joins can be controlled using the `JoinPrefix` hint, which has the same syntax as
+the `JoinOrder`. However, the prefix does not need a complete join order, but can use only a subset of the tables. The join
+order indicated by the prefix must appear first in the final query plan, but the optimizer is free to continue the join tree
+as it sees fit for the remainder of the tables.
+
+It is possible to use multiple `JoinPrefix` hints, in this case the optimizer must produce a plan that is compatible with at
+least one of them.
+For bushy plans, the optimizer can also use the prefix in the inner portion of the join tree.
+
+> [!NOTE]
+> In contrast to the `JoinOrder` hint, `JoinPrefix` does not enforce the assignment of inner/outer relations in a join.
+
+### GUC settings
+
+To temporarily change GUC settings, pg_lab supports the `Set` hint:
+
+```
+Set( <guc name> = '<guc value>' )
+```
+
+This sets the configuration parameter to the specified value for the duration of the query. More technically, the setting
+is applied before the main planning begins and reset once the query terminates.
+
+For example, `Set(enable_nestloop = 'off')` disables the usage of nested-loop joins for the duration of the query.
+All subsequent queries are once again free to use nested-loop joins (provided that the GUC was enabled before).
+
 
 ## Parallel plans
 

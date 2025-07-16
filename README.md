@@ -1,7 +1,7 @@
 # pg_lab
 
 ![GitHub License](https://img.shields.io/github/license/rbergm/pg_lab)
-![Static Badge](https://img.shields.io/badge/version-0.2.1-blue)
+![Static Badge](https://img.shields.io/badge/version-0.3.0-blue)
 
 <p align="center">
   <img src="assets/pg_lab_logo.png" width="256" alt="The Logo of pg_lab: a blue elephant wearing a chemist's coat is surrounded by various reagents." />
@@ -75,8 +75,9 @@ pg_lab.
 | Feature | pg_hint_plan | pg_lab |
 |---------|--------------|--------|
 | Forcing the join order | ✅ `Leading` hint | ✅ `JoinOrder` hint |
+| Forcing initial joins | ❔ `Leading` hint (only linear join orders) | ✅ `JoinPrefix` hint (including bushy joins) |
 | Forcing physical operators | ✅ Specific hints, e.g. `NestLoop(a b)` | ✅ Specific hints, e.g. `NestLoop(a b)` |
-| Hints for Materialize and Memoize operators | ✅ Memoize, ❌ Materialize | ✅ `Memo` and `Material` hints |
+| Hints for Materialize and Memoize operators | ❔ Memoize (not enforced), ❌ Materialize | ✅ `Memo` and `Material` hints |
 | Disabling specific operators | ✅ `NoNestLoop`, etc. hints | ❌ Not supported (⏳ but planned) |
 | Custom cardinality estimates for joins | ✅ `Rows` hint | ✅ `Card` hint |
 | Custom cardinality estimates for base tables | ❌ Not supported | ✅ `Card` hint |
@@ -84,6 +85,7 @@ pg_lab.
 | Storing and automatically re-using hint sets | ✅ Specific hint table | ❌ Not supported |
 | Custom cost estimates for joins | ❌ Not supported | ✅ Specific hints, e.g. `NestLoop(a b (COST start=4.2 total=42.42))` |
 | Custom cost estimates for base tables | ❌ Not supported | ✅ Specific hints, e.g. `SeqScan(a (COST start=4.2 total=42.42))` |
+| Temporary GUC adjustments | ✅ `Set` hint | ✅ `Set` hint |
 
 In the end, we took a lot of inspiration from pg_hint_plan for the design of pg_lab's hinting system:
 

@@ -6,7 +6,36 @@ larger parts of the library or add significant new functionality.
 Major releases fundamentally shift how the library is used and indicate stability.
 Since we are not ready for the 1.0 release yet, this does not matter right now.
 
-# ➡ Version 0.2.1 _(current)_
+---
+
+
+# ➡ Version 0.3.0 _(current)_
+
+## 🐣 New features
+- Support for partial join orders using the new `JoinPrefix` hint. Each hint block can contain multiple prefixes, the resulting
+  query plan must start with the given joins as outlined.
+- Support for temporary GUC settings using the new `Set` hint. All GUC modifications are made just for the current query and
+  will be rolled back once the query finishes.
+
+## 💀 Breaking changes
+- _None_
+
+## 📰 Updates
+- _None_
+
+## 🏥 Fixes
+- Added support for a bunch of missing path types to the hinting logic
+- 🐳 Fixed the Dockerfile using an old branch to install pg_lab
+
+## 🪲 Known bugs
+- _None_
+
+---
+
+
+# Earlier releases
+
+## 🕑 Version 0.2.1
 
 ### 🐣 New features
 - _None_
@@ -23,29 +52,6 @@ Since we are not ready for the 1.0 release yet, this does not matter right now.
   into a plan node.
 - Fixed not finding parallel plans for some hint combinations. Parallel joins take their inner access path from the (parallel
   safe) non-partial access paths, which was not correctly accounted for before.
-
-### 🪲 Known bugs
-- _None_
-
----
-
-# ➡ Version 0.3.0 _(planned)_
-
-### 🐣 New features
-- Support for partial join orders using the new `JoinPrefix` hint. Each hint block can contain multiple prefixes, the resulting
-  query plan must start with the given joins as outlined.
-- Support for temporary GUC settings using the new `Set` hint. All GUC modifications are made just for the current query and
-  will be rolled back once the query finishes.
-
-### 💀 Breaking changes
-- _None_
-
-### 📰 Updates
-- _None_
-
-### 🏥 Fixes
-- Added support for a bunch of missing path types to the hinting logic
-- 🐳 Fixed the Dockerfile using an old branch to install pg_lab
 
 ### 🪲 Known bugs
 - _None_
