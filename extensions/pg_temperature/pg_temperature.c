@@ -8,7 +8,6 @@
 #include "parser/parsetree.h"
 #include "storage/bufmgr.h"
 #include "storage/fd.h"
-#include "storage/read_stream.h"
 #include "utils/acl.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
@@ -19,17 +18,22 @@
 #endif
 
 
+#if PG_VERSION_NUM < 160000
+#define DropRelFileNodesAllBuffers(rel, n) DropRelFileNodesAllBuffers(rel, n)
+#else
+#define DropRelFileNodesAllBuffers(rel, n) DropRelationsAllBuffers(rel, n)
+#endif
+
+#if PG_VERSION_NUM >= 170000
+#include "storage/read_stream.h"
+#endif
+
+
 /*
  * PG API stuff that we need
  */
 
 extern PGDLLEXPORT planner_hook_type planner_hook;
-
-#if PG_VERSION_NUM < 160000
-    #define DropRelFileNodesAllBuffers(rel, n) DropRelFileNodesAllBuffers(rel, n)
-#else
-    #define DropRelFileNodesAllBuffers(rel, n) DropRelationsAllBuffers(rel, n)
-#endif
 
 static planner_hook_type prev_planner_hook = NULL;
 
@@ -162,6 +166,8 @@ cooldown_oid(Oid oid)
     relation_close(rel, AccessExclusiveLock);
 }
 
+#if PG_VERSION_NUM >= 170000
+
 /*
  * Our hot-start code is basically a copy of the pg_prewarm logic
  */
@@ -224,6 +230,36 @@ warmup_oid(Oid oid)
     read_stream_end(stream);
     relation_close(rel, AccessExclusiveLock);
 }
+
+#else /* PG_VERSION_NUM >= 170000 */
+
+static void
+warmup_oid(Oid oid)
+{
+    Relation  rel;
+    AclResult aclres;
+    Buffer    buf;
+    int64     blck, nblocks;
+
+    rel = relation_open(oid, AccessExclusiveLock);
+    aclres = pg_class_aclcheck(oid, GetUserId(), ACL_SELECT);
+    if (aclres != ACLCHECK_OK)
+    {
+        aclcheck_error(aclres, get_relkind_objtype(oid), get_rel_name(oid));
+        return;
+    }
+
+    nblocks = RelationGetNumberOfBlocks(rel);
+    for (blck = 0; blck < nblocks; ++blck)
+    {
+        buf = ReadBuffer(rel, blck);
+        ReleaseBuffer(buf);
+    }
+
+    relation_close(rel, AccessExclusiveLock);
+}
+
+#endif /* PG_VERSION_NUM >= 170000 */
 
 static List *
 CollectChildOids(PlannedStmt *query_plan, Plan *root)
