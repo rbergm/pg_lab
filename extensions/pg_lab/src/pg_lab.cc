@@ -630,10 +630,13 @@ hint_aware_ExecutorEnd(QueryDesc *queryDesc)
     }
 
 
-    foreach (lc, current_hints->post_opt_gucs)
+    if (current_hints)
     {
-        TempGUC *temp_guc = (TempGUC *) lfirst(lc);
-        SetConfigOption(temp_guc->guc_name, temp_guc->guc_value, PGC_USERSET, PGC_S_SESSION);
+        foreach (lc, current_hints->post_opt_gucs)
+        {
+            TempGUC *temp_guc = (TempGUC *) lfirst(lc);
+            SetConfigOption(temp_guc->guc_name, temp_guc->guc_value, PGC_USERSET, PGC_S_SESSION);
+        }
     }
 
     /* we let the context-based memory manager of PG take care of properly freeing our stuff */
