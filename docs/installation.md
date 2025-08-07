@@ -17,7 +17,7 @@ Generally speaking, this is the preferred installation method.
 >    build-essential sudo tzdata procps \
 >    bison flex curl pkg-config cmake llvm clang \
 >    git vim unzip zstd default-jre \
->    libicu-dev libreadline-dev libssl-dev liblz4-dev libossp-uuid-dev
+>    libicu-dev libreadline-dev libssl-dev libzstd-dev liblz4-dev libossp-uuid-dev
 > ```
 > On other distributions (including MacOS), install the appropriate counterparts and make sure that they are available on
 > the PATH and/or the C_INCLUDE_PATH and LD_LIBRARY_PATH.

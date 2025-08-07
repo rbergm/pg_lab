@@ -71,3 +71,4 @@ pg-build/head
 build/
 
 *.log
+*.bc

@@ -1,7 +1,7 @@
 # pg_lab
 
 ![GitHub License](https://img.shields.io/github/license/rbergm/pg_lab)
-![Static Badge](https://img.shields.io/badge/version-0.3.0-blue)
+![Static Badge](https://img.shields.io/badge/version-0.3.1-blue)
 
 <p align="center">
   <img src="assets/pg_lab_logo.png" width="256" alt="The Logo of pg_lab: a blue elephant wearing a chemist's coat is surrounded by various reagents." />
@@ -33,7 +33,7 @@ sudo apt install -y \
    build-essential sudo tzdata procps \
    bison flex curl pkg-config cmake llvm clang \
    git vim unzip zstd default-jre \
-   libicu-dev libreadline-dev libssl-dev liblz4-dev libossp-uuid-dev
+   libicu-dev libreadline-dev libssl-dev libzstd-dev liblz4-dev libossp-uuid-dev
 
 ./postgres-setup.sh --pg-ver 17 --debug --stop
 
