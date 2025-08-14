@@ -1,6 +1,7 @@
 FROM ubuntu:noble
 
 EXPOSE 5432
+STOPSIGNAL SIGINT
 
 # Install dependencies
 RUN apt update && apt install -y \
@@ -24,26 +25,13 @@ ARG TIMEZONE=UTC
 ENV TZ=$TIMEZONE
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-ARG PGVER=17
-ENV PGVER=$PGVER
-ARG DEBUG=false
-ENV DEBUG=$DEBUG
-
 WORKDIR /pg_lab
 RUN useradd -ms /bin/bash $USERNAME ; \
-    chown -R $USERNAME:$USERNAME /pg_lab ; \
-    chmod 755 /pg_lab ; \
     echo "$USERNAME:$USERNAME" | chpasswd ; \
-    usermod -aG sudo $USERNAME
+    usermod -aG sudo $USERNAME ; \
+    echo "$USER ALL=(ALL:ALL) NOPASSWD: ALL" | tee /etc/sudoers.d/$USER
 USER $USERNAME
 
-RUN git clone --depth 1 --branch=main https://github.com/rbergm/pg_lab /pg_lab ; \
-    if [ "$DEBUG" = "true" ]; then \
-        ./postgres-setup.sh --stop --pg-ver ${PGVER} --debug --remote-password ${USERNAME} ; \
-    else \
-        ./postgres-setup.sh --stop --pg-ver ${PGVER} --remote-password ${USERNAME} ; \
-    fi
-
-RUN echo "cd /pg_lab/ && source ./postgres-load-env.sh" >> /home/$USERNAME/.bashrc
-
-CMD ["/pg_lab/tools/docker-entrypoint.sh"]
+VOLUME /pg_lab
+COPY tools/docker-entrypoint.sh /docker-entrypoint.sh
+CMD ["/docker-entrypoint.sh"]

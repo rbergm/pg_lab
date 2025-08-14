@@ -77,13 +77,15 @@ If you don't want to install pg_lab locally, we also supply a Dockerfile for a c
 >       --shm-size 4G \
 >       --name pg_lab \
 >       --publish 5432:5432 \
+>       --volume $PWD/docker-volume:/pg_lab \
 >       pg_lab
 >
 > $ docker exec -it pg_lab /bin/bash
 >
 > ```
 
-When building the pg_lab image, you can pass most of the settings that the *postgres-setup.sh* script would expect:
+When creating the pg_lab container, you can pass most of the settings that the *postgres-setup.sh* script would expect as
+`--env options`:
 
 | Argument | Description | Default |
 |----------|-------------|---------|
@@ -94,5 +96,10 @@ When building the pg_lab image, you can pass most of the settings that the *post
 
 The image exposes the default Postgres port `5432`.
 Don't forget to bind to it when creating the container if you want to directly connect to the server.
+The `/pg_lab` volume is used to make all of the installation files available on the host and can be used to easily ingest
+data into the container.
+
+Setting the shared memory to a large enough value is important for Postgres' day-to-day operation since shared memory is used
+for the page cache. It is generally recommended to set it so 1/4 of your system's RAM or more.
 
 Once you have your container up and running, the shell will have all paths already set up properly.

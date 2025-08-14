@@ -1,7 +1,7 @@
 # pg_lab
 
-![GitHub License](https://img.shields.io/github/license/rbergm/pg_lab)
-![Static Badge](https://img.shields.io/badge/version-0.3.1-blue)
+![GitHub License](https://img.shields.io/github/license/rbergm/pg_lab?color=green)
+![GitHub Release](https://img.shields.io/github/v/release/rbergm/pg_lab?color=blue)
 
 <p align="center">
   <img src="assets/pg_lab_logo.png" width="256" alt="The Logo of pg_lab: a blue elephant wearing a chemist's coat is surrounded by various reagents." />
@@ -43,13 +43,9 @@ sudo apt install -y \
 For the **Docker installation**, use the following:
 
 ```sh
-docker build \
-  -t pg_lab:latest \
-  --build-arg PGVER=17 \
-  --build-arg TIMEZONE=$(cat /etc/timezone) \
-  .
+docker build -t pg_lab --build-arg TIMEZONE=$(cat /etc/timezone) .
 
-docker run -d --name pg_lab -p 5432:5432 pg_lab:latest
+docker run -d --name pg_lab -p 5432:5432 --volume $PWD/docker-volume:/pg_lab pg_lab
 
 docker exec -it pg_lab /bin/bash
 ```
