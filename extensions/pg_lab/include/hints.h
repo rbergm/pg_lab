@@ -29,9 +29,18 @@ extern "C" {
 #define IsAIntermediatePath(pathptr) (PathIsA(pathptr, Memoize) || PathIsA(pathptr, Material))
 #define IsAParPath(pathptr) (PathIsA(pathptr, Gather) || PathIsA(pathptr, GatherMerge))
 
+typedef struct TempGUC
+{
+    char *guc_name;
+    char *guc_value;
+} TempGUC;
+
 
 /* The query currently being optimized/executed. */
 extern char *current_query_string;
+
+extern TempGUC **guc_cleanup_actions;
+extern int n_cleanup_actions;
 
 typedef enum HintMode
 {
@@ -164,12 +173,6 @@ typedef struct CostHint
     } costs;
 } CostHint;
 
-typedef struct TempGUC
-{
-    char *guc_name;
-    char *guc_value;
-} TempGUC;
-
 typedef struct PlannerHints
 {
     char *raw_query;
@@ -198,9 +201,7 @@ typedef struct PlannerHints
 
     bool parallelize_entire_plan;
 
-    List *pre_opt_gucs;
-
-    List *post_opt_gucs;
+    List *temp_gucs;
 
 } PlannerHints;
 
@@ -223,7 +224,11 @@ extern void MakeCostHint(PlannerInfo *root, PlannerHints *hints, List *rels,
 extern JoinOrder* MakeJoinOrderIntermediate(PlannerInfo *root, JoinOrder *outer_child, JoinOrder *inner_child);
 extern JoinOrder* MakeJoinOrderBase(PlannerInfo *root, const char *relname);
 
-extern void MakeGUCHint(PlannerHints *hints, const char *guc_name, const char *guc_value);
+extern TempGUC* MakeGUCHint(PlannerHints *hints, const char *guc_name, const char *guc_value);
+
+extern void InitGucCleanup(int n_actions);
+extern void StoreGucCleanup(TempGUC *temp_guc);
+extern void FreeGucCleanup();
 
 #ifdef __cplusplus
 } // extern "C"

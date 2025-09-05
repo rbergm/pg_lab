@@ -108,7 +108,11 @@ cost
     ;
 
 guc_hint
-    : SET LPAREN IDENTIFIER EQ QUOTE guc_value QUOTE RPAREN
+    : SET LPAREN guc_name EQ QUOTE guc_value QUOTE RPAREN
+    ;
+
+guc_name
+    : IDENTIFIER
     ;
 
 guc_value

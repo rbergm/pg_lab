@@ -24,7 +24,7 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
 {
     public:
         explicit HintBlockListener(PlannerInfo *root, PlannerHints *hints)
-            : root_(root), hints_(hints) {}
+            : root_(root), hints_(hints), temp_gucs_() {}
 
         void enterPlan_mode_setting(pg_lab::HintBlockParser::Plan_mode_settingContext *ctx) override
         {
@@ -185,15 +185,25 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
 
         void enterGuc_hint(pg_lab::HintBlockParser::Guc_hintContext *ctx) override
         {
-            char *guc_name = pstrdup(ctx->IDENTIFIER()->getText().c_str());
-            char *guc_value = pstrdup(ctx->guc_value()->getText().c_str());
+            auto guc_name = ctx->guc_name()->getText();
+            auto guc_value = ctx->guc_value()->getText();
 
-            MakeGUCHint(hints_, guc_name, guc_value);
+            auto cleanup = MakeGUCHint(hints_, guc_name.c_str(), guc_value.c_str());
+            if (cleanup)
+                temp_gucs_.push_back(cleanup);
+        }
+
+        void ExportGucCleanup()
+        {
+            InitGucCleanup(temp_gucs_.size());
+            for (const auto &temp_guc : temp_gucs_)
+                StoreGucCleanup(temp_guc);
         }
 
     private:
         PlannerInfo  *root_;
         PlannerHints *hints_;
+        std::vector<TempGUC *> temp_gucs_;
 
         float ParseParallelWorkers(pg_lab::HintBlockParser::Parallel_hintContext *ctx)
         {
@@ -310,6 +320,7 @@ parse_hint_block(PlannerInfo *root, PlannerHints *hints)
     antlr4::tree::ParseTree *tree = parser.hint_block();
     HintBlockListener listener(root, hints);
     antlr4::tree::ParseTreeWalker::DEFAULT.walk(&listener, tree);
+    listener.ExportGucCleanup();
 }
 
 }

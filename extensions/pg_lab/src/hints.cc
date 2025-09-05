@@ -8,8 +8,12 @@ extern "C" {
 #include "postgres.h"
 #include "miscadmin.h"
 #include "utils/guc.h"
+#include "utils/memutils.h"
 
 #include "hints.h"
+
+TempGUC **guc_cleanup_actions = NULL;
+int n_cleanup_actions = 0;
 
 const char *
 PhysicalOperatorToString(PhysicalOperator op)
@@ -418,8 +422,7 @@ init_hints(const char *raw_query)
     hints->parallel_workers = 0;
     hints->parallelize_entire_plan = false;
 
-    hints->pre_opt_gucs = NIL;
-    hints->post_opt_gucs = NIL;
+    hints->temp_gucs = NIL;
 
     return hints;
 }
@@ -427,6 +430,8 @@ init_hints(const char *raw_query)
 void
 free_hints(PlannerHints *hints)
 {
+    ListCell *lc;
+
     if (!hints)
         return;
 
@@ -438,6 +443,15 @@ free_hints(PlannerHints *hints)
     hash_destroy(hints->operator_hints);
     hash_destroy(hints->cardinality_hints);
     hash_destroy(hints->cost_hints);
+
+    foreach (lc, hints->temp_gucs)
+    {
+        TempGUC *guc = (TempGUC *) lfirst(lc);
+        pfree(guc->guc_name);
+        pfree(guc->guc_value);
+        pfree(guc);
+    }
+    list_free(hints->temp_gucs);
 }
 
 void
@@ -764,7 +778,20 @@ MakeJoinOrderBase(PlannerInfo *root, const char *relname)
     return join_order;
 }
 
-void MakeGUCHint(PlannerHints *hints, const char *guc_name, const char *guc_value)
+/*
+ * Generates a GUC setting along with its undo information.
+ *
+ * The generated setting is automatically added to the PlannerHints.
+ * The undo setting is transferred into the callers ownership as the return value.
+ *
+ * This structure is necessary because the GUCs and their undo information need to survive different memory contexts:
+ * the GUC is only required during planning and can be discarded thereafter. It is therefore directly attached to the
+ * PlannerHints. The undo information, however, needs to survive for as long as the query is executed because some settings
+ * might change the runtime behavior of the executor (e.g. by disabling JIT or parallel query execution). These settings
+ * can only be undone once the query has finished execution. The undo information is therefore allocated in the transaction
+ * memory context.
+ */
+TempGUC* MakeGUCHint(PlannerHints *hints, const char *guc_name, const char *guc_value)
 {
     TempGUC *set_guc, *reset_guc;
     const char *current_val;
@@ -775,20 +802,48 @@ void MakeGUCHint(PlannerHints *hints, const char *guc_name, const char *guc_valu
         ereport(WARNING,
                 (errcode(ERRCODE_UNDEFINED_OBJECT),
                  errmsg("GUC \"%s\" does not exist, cannot set hint", guc_name)));
-        return;
+        return NULL; /* keep the compiler quiet */
     }
 
     set_guc = (TempGUC *) palloc0(sizeof(TempGUC));
     set_guc->guc_name = pstrdup(guc_name);
     set_guc->guc_value = pstrdup(guc_value);
+    hints->temp_gucs = lappend(hints->temp_gucs, set_guc);
 
-    reset_guc = (TempGUC *) palloc0(sizeof(TempGUC));
-    reset_guc->guc_name = pstrdup(guc_name);
-    reset_guc->guc_value = pstrdup(current_val);
+    reset_guc = (TempGUC *) MemoryContextAllocZero(CurTransactionContext, sizeof(TempGUC));
+    reset_guc->guc_name = MemoryContextStrdup(CurTransactionContext, guc_name);
+    reset_guc->guc_value = MemoryContextStrdup(CurTransactionContext, current_val);
 
-    hints->pre_opt_gucs = lappend(hints->pre_opt_gucs, set_guc);
-    hints->post_opt_gucs = lappend(hints->post_opt_gucs, reset_guc);
-    hints->contains_hint = true;
+    return reset_guc;
+}
+
+void InitGucCleanup(int n_actions)
+{
+    guc_cleanup_actions = (TempGUC **) MemoryContextAllocZero(CurTransactionContext, n_actions * sizeof(TempGUC *));
+    n_cleanup_actions = 0;
+}
+
+void StoreGucCleanup(TempGUC *temp_guc)
+{
+    guc_cleanup_actions[n_cleanup_actions++] = temp_guc;
+}
+
+void FreeGucCleanup()
+{
+    if (!guc_cleanup_actions)
+        return;
+
+    for (int i = 0; i < n_cleanup_actions; i++)
+    {
+        TempGUC *guc = guc_cleanup_actions[i];
+        pfree(guc->guc_name);
+        pfree(guc->guc_value);
+        pfree(guc);
+    }
+
+    pfree(guc_cleanup_actions);
+    guc_cleanup_actions = NULL;
+    n_cleanup_actions = 0;
 }
 
 #ifdef __cplusplus

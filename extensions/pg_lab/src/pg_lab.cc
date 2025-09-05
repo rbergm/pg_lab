@@ -138,6 +138,9 @@ extern "C" {
                                                            JoinPathExtraData *extra);
 
     extern PGDLLEXPORT void hint_aware_ExecutorEnd(QueryDesc *queryDesc);
+
+    extern TempGUC **guc_cleanup_actions;
+    extern int n_cleanup_actions;
 }
 
 static bool enable_pglab = true;
@@ -612,6 +615,11 @@ hint_aware_planner(Query* parse, const char* query_string, int cursorOptions, Pa
         result = standard_planner(parse, query_string, cursorOptions, boundParams);
     }
 
+    /* we let the context-based memory manager of PG take care of properly freeing our stuff */
+    current_hints        = NULL;
+    current_planner_root = NULL;
+    current_query_string = NULL;
+
     return result;
 }
 
@@ -629,20 +637,13 @@ hint_aware_ExecutorEnd(QueryDesc *queryDesc)
         return;
     }
 
-
-    if (current_hints)
+    for (int i = 0; i < n_cleanup_actions; i++)
     {
-        foreach (lc, current_hints->post_opt_gucs)
-        {
-            TempGUC *temp_guc = (TempGUC *) lfirst(lc);
-            SetConfigOption(temp_guc->guc_name, temp_guc->guc_value, PGC_USERSET, PGC_S_SESSION);
-        }
+        TempGUC *temp_guc = guc_cleanup_actions[i];
+        SetConfigOption(temp_guc->guc_name, temp_guc->guc_value, PGC_USERSET, PGC_S_SESSION);
     }
 
-    /* we let the context-based memory manager of PG take care of properly freeing our stuff */
-    current_hints        = NULL;
-    current_planner_root = NULL;
-    current_query_string = NULL;
+    FreeGucCleanup();
 
     if (prev_executor_end_hook)
         prev_executor_end_hook(queryDesc);
@@ -671,7 +672,7 @@ hint_aware_make_one_rel_prep(PlannerInfo *root, List *joinlist)
     parse_hint_block(root, hints);
     post_process_hint_block(hints);
 
-    foreach (lc, hints->pre_opt_gucs)
+    foreach (lc, hints->temp_gucs)
     {
         TempGUC *temp_guc = (TempGUC *) lfirst(lc);
         SetConfigOption(temp_guc->guc_name, temp_guc->guc_value, PGC_USERSET, PGC_S_SESSION);
