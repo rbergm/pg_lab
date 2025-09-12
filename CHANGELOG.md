@@ -28,36 +28,36 @@ Since we are not ready for the 1.0 release yet, this does not matter right now.
 
 # Earlier releases
 
-# 🕑 Version 0.4.1 _(current)_
+## 🕑 Version 0.4.1
 
-## 🐣 New features
+### 🐣 New features
 - _None_
 
-## 💀 Breaking changes
+### 💀 Breaking changes
 - _None_
 
-## 📰 Updates
+### 📰 Updates
 - _None_
 
-## 🏥 Fixes
+### 🏥 Fixes
 - Fixed segfault after "arbitrary" query executions. It turns out that internal management of temporary GUCs used Postgres'
   memory contexts incorrectly, leading to use-after-free bugs.
 
 ---
 
 
-# 🕑 Version 0.4.0
+## 🕑 Version 0.4.0
 
-## 🐣 New features
+### 🐣 New features
 - 🐳 Reworked the Dockerfile to properly support volumes
 
-## 💀 Breaking changes
+### 💀 Breaking changes
 - _None_
 
-## 📰 Updates
+### 📰 Updates
 - _None_
 
-## 🏥 Fixes
+### 🏥 Fixes
 - _None_
 
 ---
