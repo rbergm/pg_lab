@@ -8,7 +8,27 @@ Since we are not ready for the 1.0 release yet, this does not matter right now.
 
 ---
 
-# ➡ Version 0.4.1 _(current)_
+# ➡ Version 0.4.2 _(current)_
+
+## 🐣 New features
+- _None_
+
+## 💀 Breaking changes
+- _None_
+
+## 📰 Updates
+- Migrated to Meson for the Postgres build. This seems to be the more robust approach across platforms (especially
+  including MacOS). At the same time, this also provides faster build times and better IntelliSense for VSCode on WSL.
+
+## 🏥 Fixes
+- _None_
+
+---
+
+
+# Earlier releases
+
+# 🕑 Version 0.4.1 _(current)_
 
 ## 🐣 New features
 - _None_
@@ -26,9 +46,7 @@ Since we are not ready for the 1.0 release yet, this does not matter right now.
 ---
 
 
-# Earlier releases
-
-# ➡ Version 0.4.0
+# 🕑 Version 0.4.0
 
 ## 🐣 New features
 - 🐳 Reworked the Dockerfile to properly support volumes

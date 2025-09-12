@@ -11,12 +11,6 @@ sed_wrapper() {
     fi
 }
 
-# Assert that we are not sourcing
-if [ -n "$BASH_VERSION" -a "$BASH_SOURCE" != "$0" ] || [ -n "$ZSH_VERSION" -a "$ZSH_EVAL_CONTEXT" != "toplevel" ] ; then
-    echo "This script should not be sourced. Please run it as ./postgres-setup.sh" 1>&2
-    return 1
-fi
-
 set -e  # exit on error
 
 WD=$(pwd)
@@ -32,18 +26,7 @@ ENABLE_REMOTE_ACCESS="false"
 USER_PASSWORD=""
 STOP_AFTER="false"
 DEBUG_BUILD="false"
-
-OS_TYPE=$(uname)
-if [[ "$OS_TYPE" = "Darwin" ]]; then
-    MAKE_CORES=$(sysctl -n hw.logicalcpu)
-    UUID_FLAGS="--with-uuid=e2fs"
-elif [[ "$OS_TYPE" = "Linux" ]]; then
-    MAKE_CORES=$(nproc)
-    UUID_FLAGS="--with-uuid=ossp"
-else
-    echo "Unsupported operating system: $OS_TYPE"
-    exit 1
-fi
+UUID_LIBRARY="none"
 
 show_help() {
     RET=$1
@@ -57,6 +40,7 @@ show_help() {
     echo -e "--remote-password <password>\tEnable remote access for the current user, based on the given password.${NEWLINE}Remote access is disabled if no password is provided."
     echo -e "--debug\t\t\t\tProduce a debug build of the Postgres server"
     echo -e "--stop\t\t\t\tStop the Postgres server process after installation and setup finished"
+    echo -e "--uuid-lib <library>\t\tSpecify the UUID library to use or 'none' to disable UUID support (default: none).${NEWLINE}Currently supported libraries are 'ossp' and 'e2fs'."
     exit $RET
 }
 
@@ -109,6 +93,24 @@ while [ $# -gt 0 ] ; do
             STOP_AFTER="true"
             shift
             ;;
+        --uuid-lib)
+            case $2 in
+                ossp)
+                    UUID_LIBRARY="ossp"
+                    ;;
+                e2fs)
+                    UUID_LIBRARY="e2fs"
+                    ;;
+                none)
+                    UUID_LIBRARY="none"
+                    ;;
+                *)
+                    show_help
+                    ;;
+            esac
+            shift
+            shift
+            ;;
         --help)
             show_help 0
             ;;
@@ -117,6 +119,14 @@ while [ $# -gt 0 ] ; do
             ;;
     esac
 done
+
+# Assert that we are not sourcing
+if [ -n "$BASH_VERSION" -a "$BASH_SOURCE" != "$0" ] || [ -n "$ZSH_VERSION" -a "$ZSH_EVAL_CONTEXT" != "toplevel" ] ; then
+    if [ "$STOP_AFTER" = "true"] ; then
+        echo "This script should not be sourced. Please run it as ./postgres-setup.sh" 1>&2
+        return 1
+    fi
+fi
 
 if [ "$FORCE_TARGET_DIR" = "false" ] ; then
     PG_TARGET_DIR="$PG_TARGET_DIR/pg-$PG_VER_PRETTY"
@@ -128,39 +138,36 @@ cd $PG_SRC_DIR
 git submodule update --init
 git switch $PG_VERSION && git pull
 
+make distclean || true
 if [ "$DEBUG_BUILD" = "true" ] ; then
-    ./configure --prefix=$PG_TARGET_DIR \
-        --with-ssl=openssl \
-        --with-python \
-        --with-llvm \
-        --with-lz4 \
-        --with-zstd \
-        --enable-debug \
-        --enable-cassert \
-        $UUID_FLAGS CFLAGS='-Og'
+    meson setup build --prefix=$PG_TARGET_DIR/build \
+        --buildtype=debug \
+        --debug \
+        --reconfigure \
+        -Dplpython=auto \
+        -Dicu=enabled \
+        -Dllvm=auto \
+        -Dlz4=auto \
+        -Dzstd=auto \
+        -Dssl=openssl \
+        -Duuid="$UUID_LIBRARY"
 else
-    ./configure --prefix=$PG_TARGET_DIR \
-        --with-ssl=openssl \
-        --with-python \
-        --with-llvm \
-        --with-lz4 \
-        --with-zstd \
-        $UUID_FLAGS
+    meson setup build --prefix=$PG_TARGET_DIR \
+        --buildtype=release \
+        --reconfigure \
+        -Dplpython=auto \
+        -Dicu=enabled \
+        -Dllvm=auto \
+        -Dlz4=auto \
+        -Dzstd=auto \
+        -Dssl=openssl \
+        -Duuid="$UUID_LIBRARY"
 fi
-
-make clean && make -j $MAKE_CORES && make install
+cd $PG_SRC_DIR/build
+ninja clean && ninja all && ninja install
 export PATH="$PG_TARGET_DIR/bin:$PATH"
 export LD_LIBRARY_PATH="$PG_TARGET_DIR/lib:$LD_LIBRARY_PATH"
 export C_INCLUDE_PATH="$PG_TARGET_DIR/include/server:$C_INCLUDE_PATH"
-
-echo ".. Installing pg_prewarm extension"
-cd $PG_SRC_DIR/contrib/pg_prewarm
-make -j $MAKE_CORES && make install
-
-echo ".. Installing pg_buffercache extension"
-cd $PG_SRC_DIR/contrib/pg_buffercache
-make -j $MAKE_CORES && make install
-
 
 echo ".. Installing pg_lab extension"
 PGLAB_DIR=$WD/extensions/pg_lab
@@ -171,7 +178,6 @@ if [ "$DEBUG_BUILD" = "true" ] ; then
 else
     cmake -DCMAKE_BUILD_TYPE=Release -DPG_INSTALL_DIR="$PG_TARGET_DIR" ..
 fi
-
 make -j $MAKE_CORES
 
 echo ".. Installing pg_temperature extension"

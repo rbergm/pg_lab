@@ -86,9 +86,22 @@ target_include_directories(pg_lab PRIVATE
     "${antlr_SOURCE_DIR}/runtime/Cpp/runtime/src"
     "${ANTLR_HintBlockGrammar_OUTPUT_DIR}")
 
+find_program(PG_CONFIG_EXECUTABLE pg_config)
+if(PG_CONFIG_EXECUTABLE)
+    execute_process(
+        COMMAND ${PG_CONFIG_EXECUTABLE} --libdir
+        OUTPUT_VARIABLE PG_LIB_DIR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+else()
+    set(PG_LIB_DIR "${PG_INSTALL_DIR}/lib/postgresql")
+endif()
+
+
+
 add_custom_command(TARGET pg_lab POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy
         $<TARGET_FILE:pg_lab>
-        "${PG_INSTALL_DIR}/lib/postgresql/pg_lab.$<IF:$<PLATFORM_ID:Darwin>,dylib,so>"
-    COMMENT "Copying pg_lab to PostgreSQL server extension directory at ${PG_INSTALL_DIR}/lib/postgresql/"
+        "${PG_LIB_DIR}/postgresql/pg_lab.$<IF:$<PLATFORM_ID:Darwin>,dylib,so>"
+    COMMENT "Copying pg_lab to PostgreSQL server extension directory at ${PG_LIB_DIR}/postgresql/"
 )

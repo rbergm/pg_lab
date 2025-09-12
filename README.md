@@ -30,7 +30,7 @@ For the **local installation** on a Ubuntu-based system, use the following:
 
 ```sh
 sudo apt install -y \
-   build-essential sudo tzdata procps \
+   build-essential meson ninja-build sudo tzdata procps \
    bison flex curl pkg-config cmake llvm clang \
    git vim unzip zstd default-jre \
    libicu-dev libreadline-dev libssl-dev libzstd-dev liblz4-dev libossp-uuid-dev

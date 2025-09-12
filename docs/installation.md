@@ -14,7 +14,7 @@ Generally speaking, this is the preferred installation method.
 > On Ubuntu, the following apt command should cover it all:
 > ```sh
 > sudo apt install -y \
->    build-essential sudo tzdata procps \
+>    build-essential meson ninja-build sudo tzdata procps \
 >    bison flex curl pkg-config cmake llvm clang \
 >    git vim unzip zstd default-jre \
 >    libicu-dev libreadline-dev libssl-dev libzstd-dev liblz4-dev libossp-uuid-dev
