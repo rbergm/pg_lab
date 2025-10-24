@@ -138,7 +138,11 @@ cd $PG_SRC_DIR
 git submodule update --init
 git switch $PG_VERSION && git pull
 
-make distclean || true
+if [ -f GNUmakefile ] ; then
+    echo ".. Cleaning previous build"
+    make distclean
+fi
+
 if [ "$DEBUG_BUILD" = "true" ] ; then
     meson setup build --prefix=$PG_TARGET_DIR/build \
         --buildtype=debug \
