@@ -8,7 +8,7 @@ Since we are not ready for the 1.0 release yet, this does not matter right now.
 
 ---
 
-# ➡ Version 0.4.2 _(current)_
+# ➡ Version 0.4.3 _(current)_
 
 ## 🐣 New features
 - _None_
@@ -17,16 +17,35 @@ Since we are not ready for the 1.0 release yet, this does not matter right now.
 - _None_
 
 ## 📰 Updates
-- Migrated to Meson for the Postgres build. This seems to be the more robust approach across platforms (especially
-  including MacOS). At the same time, this also provides faster build times and better IntelliSense for VSCode on WSL.
+- _None_
 
 ## 🏥 Fixes
-- _None_
+- Fixed segfault when using *plan_mode=full*
+- Fixed the setup script failing on some systems. It seems like make produces an error when trying to clean projects that have
+  not run configure before. **🙏 Thanks @JWehrstein for reporting!**
 
 ---
 
 
 # Earlier releases
+
+## 🕑 Version 0.4.2
+
+### 🐣 New features
+- _None_
+
+### 💀 Breaking changes
+- _None_
+
+### 📰 Updates
+- Migrated to Meson for the Postgres build. This seems to be the more robust approach across platforms (especially
+  including MacOS). At the same time, this also provides faster build times and better IntelliSense for VSCode on WSL.
+
+### 🏥 Fixes
+- _None_
+
+---
+
 
 ## 🕑 Version 0.4.1
 

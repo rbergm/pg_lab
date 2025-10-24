@@ -161,7 +161,7 @@ static PlannerHints *current_hints = NULL;
 #define PathRelids(pathptr) (pathptr->parent->relids == NULL /* this is true for upper rels */ \
                              ? current_planner_root->all_baserels \
                              : pathptr->parent->relids)
-#define FreePath(pathptr) if (IsA(pathptr, IndexScan)) { pfree(pathptr); }
+#define FreePath(pathptr) if (!IsA(pathptr, IndexScan)) { pfree(pathptr); }
 
 /*
  * Checks, whether the given path has the operator that is required by the current hints.
@@ -209,7 +209,7 @@ path_satisfies_operator(Path *path, JoinOrder *join_order, Path *parent_node)
      * Afterwards, we simply switch over the hinted operator and make sure that our path is of the correct type.
      */
 
-    if (current_hints->mode == HINTMODE_FULL)
+    if (parent_node && current_hints->mode == HINTMODE_FULL)
     {
         if (PathIsA(parent_node, Memoize) && (!op_hint || !op_hint->memoize_output))
             return false;
