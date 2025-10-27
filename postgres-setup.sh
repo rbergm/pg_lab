@@ -27,6 +27,8 @@ USER_PASSWORD=""
 STOP_AFTER="false"
 DEBUG_BUILD="false"
 UUID_LIBRARY="none"
+LLVM_OPTS="auto"
+
 
 show_help() {
     RET=$1
@@ -41,6 +43,7 @@ show_help() {
     echo -e "--debug\t\t\t\tProduce a debug build of the Postgres server"
     echo -e "--stop\t\t\t\tStop the Postgres server process after installation and setup finished"
     echo -e "--uuid-lib <library>\t\tSpecify the UUID library to use or 'none' to disable UUID support (default: none).${NEWLINE}Currently supported libraries are 'ossp' and 'e2fs'."
+    echo -e "--llvm-jit <on|off|auto>\tEnable or disable LLVM-based JIT compilation (default: on only if LLVM is available)."
     exit $RET
 }
 
@@ -111,6 +114,11 @@ while [ $# -gt 0 ] ; do
             shift
             shift
             ;;
+        --llvm-jit)
+            LLVM_OPTS="$2"
+            shift
+            shift
+            ;;
         --help)
             show_help 0
             ;;
@@ -150,7 +158,7 @@ if [ "$DEBUG_BUILD" = "true" ] ; then
         --reconfigure \
         -Dplpython=auto \
         -Dicu=enabled \
-        -Dllvm=auto \
+        -Dllvm="$LLVM_OPTS" \
         -Dlz4=auto \
         -Dzstd=auto \
         -Dssl=openssl \
@@ -161,7 +169,7 @@ else
         --reconfigure \
         -Dplpython=auto \
         -Dicu=enabled \
-        -Dllvm=auto \
+        -Dllvm="$LLVM_OPTS" \
         -Dlz4=auto \
         -Dzstd=auto \
         -Dssl=openssl \
