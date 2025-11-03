@@ -18,6 +18,7 @@ extern "C" {
 #include "optimizer/pathnode.h"
 #include "optimizer/planmain.h"
 #include "optimizer/planner.h"
+#include "parser/parsetree.h"
 #include "utils/guc.h"
 #include "utils/hsearch.h"
 
@@ -145,6 +146,7 @@ extern "C" {
 
 static bool enable_pglab = true;
 static bool pglab_check_final_path = true;
+static bool trace_pruning = false;
 
 /* Stores the raw query that is currently being optimized in this backend. */
 char *current_query_string = NULL;
@@ -162,6 +164,90 @@ static PlannerHints *current_hints = NULL;
                              ? current_planner_root->all_baserels \
                              : pathptr->parent->relids)
 #define FreePath(pathptr) if (!IsA(pathptr, IndexScan)) { pfree(pathptr); }
+
+#define pglab_trace(...) \
+    if (trace_pruning) \
+    { \
+        elog(INFO, __VA_ARGS__); \
+    }
+
+static char *
+relopt_to_string(RelOptInfo *rel)
+{
+    int i = -1;
+    StringInfo buf = makeStringInfo();
+    bool first = true;
+    appendStringInfo(buf, "{");
+
+    while ((i = bms_next_member(rel->relids, i)) >= 0)
+    {
+        RangeTblEntry *rte = rt_fetch(i, current_planner_root->parse->rtable);
+        if (first)
+            first = false;
+        else
+            appendStringInfo(buf, ", ");
+        appendStringInfo(buf, "%s", rte->eref->aliasname);
+    }
+
+    appendStringInfo(buf, "}");
+    return buf->data;
+}
+
+static char *
+pathtype_to_string(Path *path)
+{
+    if (IsA(path, SeqScan))
+        return "SeqScan";
+    else if (IsA(path, IndexScan))
+        return "IndexScan";
+    else if (IsA(path, IndexOnlyScan))
+        return "IndexOnlyScan";
+    else if (IsA(path, BitmapHeapScan))
+        return "BitmapHeapScan";
+    else if (IsA(path, TidScan))
+        return "TidScan";
+    else if (IsA(path, SubqueryScan))
+        return "SubqueryScan";
+    else if (IsA(path, FunctionScan))
+        return "FunctionScan";
+    else if (IsA(path, ValuesScan))
+        return "ValuesScan";
+    else if (IsA(path, CteScan))
+        return "CteScan";
+    else if (IsA(path, ForeignScan))
+        return "ForeignScan";
+    else if (IsA(path, NestLoop))
+        return "NestLoop";
+    else if (IsA(path, MergeJoin))
+        return "MergeJoin";
+    else if (IsA(path, HashJoin))
+        return "HashJoin";
+    else if (IsA(path, Material))
+        return "Material";
+    else if (IsA(path, Memoize))
+        return "Memoize";
+    else if (IsA(path, Agg) || IsA(path, AggPath))
+        return "Aggregate";
+    else if (IsA(path, Gather))
+        return "Gather";
+    else if (IsA(path, GatherMerge))
+        return "GatherMerge";
+    else if (IsA(path, Sort))
+        return "Sort";
+    else if (IsA(path, Limit))
+        return "Limit";
+    else
+        return "<Unknown>";
+}
+
+static char *
+path_to_string(Path *path)
+{
+    StringInfo buf = makeStringInfo();
+    appendStringInfoString(buf, pathtype_to_string(path));
+    appendStringInfo(buf, "(%s)", relopt_to_string(path->parent));
+    return buf->data;
+}
 
 /*
  * Checks, whether the given path has the operator that is required by the current hints.
@@ -212,9 +298,15 @@ path_satisfies_operator(Path *path, JoinOrder *join_order, Path *parent_node)
     if (parent_node && current_hints->mode == HINTMODE_FULL)
     {
         if (PathIsA(parent_node, Memoize) && (!op_hint || !op_hint->memoize_output))
+        {
+            pglab_trace("Rejecting path %s - full plan does not contain memoize node", path_to_string(path));
             return false;
+        }
         else if (PathIsA(parent_node, Material) && (!op_hint || !op_hint->materialize_output))
+        {
+            pglab_trace("Rejecting path %s - full plan does not contain materialize node", path_to_string(path));
             return false;
+        }
         else if (PathIsA(parent_node, MergeJoin))
         {
             MergePath *merge_parent;
@@ -228,11 +320,17 @@ path_satisfies_operator(Path *path, JoinOrder *join_order, Path *parent_node)
         return true;
 
     if (parent_node && !PathIsA(parent_node, Memoize) && op_hint->memoize_output)
+    {
+        pglab_trace("Rejecting path %s - has to be memoized", path_to_string(path));
         return false;
+    }
     else if (parent_node && op_hint->materialize_output)
     {
         if (!PathIsA(parent_node, MergeJoin) && !PathIsA(parent_node, Material))
+        {
+            pglab_trace("Rejecting path %s - has to be materialized", path_to_string(path));
             return false;
+        }
         else if (PathIsA(parent_node, MergeJoin))
         {
             MergePath *merge_parent;
@@ -421,8 +519,11 @@ path_satisfies_hints(Path *path, JoinOrder *join_node, Path **par_subpath, Path 
     }
 
     if (!bms_equal(path->parent->relids, join_node->relids))
+    {
         /* Make sure that we satisfy the join order */
+        pglab_trace("Rejecting path %s - not on join order", path_to_string(path));
         return false;
+    }
 
     if (IsAScanPath(path))
         /*
@@ -573,7 +674,10 @@ check_all_hints(PlannerInfo *root, RelOptInfo *rel, Path *path, bool force_paral
     }
 
     if (!all_prefixes_disjunct && !matching_prefix)
+    {
+        pglab_trace("Rejecting path %s - does not match any join prefix", path_to_string(path));
         return false;
+    }
 
     join_order = current_hints->join_order_hint
                  ? traverse_join_order(current_hints->join_order_hint, PathRelids(path))
@@ -581,9 +685,17 @@ check_all_hints(PlannerInfo *root, RelOptInfo *rel, Path *path, bool force_paral
 
     par_subpath = NULL;
     satisfies_hints = path_satisfies_hints(path, join_order, &par_subpath, NULL);
-    if (satisfies_hints && (force_parallelization_check || par_subpath))
+    if (!satisfies_hints)
+    {
+        pglab_trace("Rejecting path %s - does not satisfy all hints", path_to_string(path));
+        return false;
+    }
+
+    if (force_parallelization_check || par_subpath)
         satisfies_hints = path_satisfies_parallelization(rel, par_subpath);
 
+    if (!satisfies_hints)
+        pglab_trace("Rejecting path %s - does not satisfy parallelization hints", path_to_string(path));
     return satisfies_hints;
 }
 
@@ -753,10 +865,10 @@ hint_aware_add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost, Li
  *
  *
  * NB: in order for the implementation to work correctly, we cannot use parent_rel->relids ever! Instead, we always need to
- * use new_path->parent->relids! This is because parent_rel->relids is not set for upper rels (for whatever reason..).
+ * use path->parent->relids! This is because parent_rel->relids is not set for upper rels (for whatever reason..).
  */
 extern "C" void
-hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
+hint_aware_add_path(RelOptInfo *parent_rel, Path *path)
 {
     Path      *par_subpath;
     JoinOrder *join_order;
@@ -766,9 +878,9 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
     if (!current_hints || !current_hints->contains_hint || parent_rel->pathlist == NIL)
     {
         if (prev_add_path_hook)
-            (*prev_add_path_hook)(parent_rel, new_path);
+            (*prev_add_path_hook)(parent_rel, path);
         else
-            standard_add_path(parent_rel, new_path);
+            standard_add_path(parent_rel, path);
         return;
     }
 
@@ -785,7 +897,7 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
             JoinOrder *prefix = (JoinOrder *) lfirst(lc);
             JoinOrder_Comparison cmp;
 
-            cmp = join_order_compare(prefix, new_path, current_planner_root->all_baserels);
+            cmp = join_order_compare(prefix, path, current_planner_root->all_baserels);
             if (cmp == JO_EQUAL)
             {
                 matching_prefix = true;
@@ -802,13 +914,13 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
 
     if (!all_prefixes_disjunct && !matching_prefix)
     {
-        FreePath(new_path);
+        FreePath(path);
         return;
     }
 
 
     join_order = current_hints->join_order_hint != NULL
-                 ? traverse_join_order(current_hints->join_order_hint, PathRelids(new_path))
+                 ? traverse_join_order(current_hints->join_order_hint, PathRelids(path))
                  : NULL;
 
     /*
@@ -816,7 +928,7 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
      * parallel subpaths. This subpath in turn serves as the primary input for the parallelization check.
      */
     par_subpath = NULL;
-    keep_new = path_satisfies_hints(new_path, join_order, &par_subpath, NULL);
+    keep_new = path_satisfies_hints(path, join_order, &par_subpath, NULL);
 
     if (keep_new && par_subpath)
         keep_new = path_satisfies_parallelization(parent_rel, par_subpath);
@@ -829,7 +941,18 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
             bool keep_placeholder;
 
             placeholder_path = (Path *) linitial(parent_rel->pathlist);
-            keep_placeholder = check_all_hints(current_planner_root, parent_rel, placeholder_path, false);
+
+            /* We only need to check for parallelization, if the new path is a parallel path.
+             * Otherwise, we might reject all sequential paths when the current relation should be executed in parallel.
+             * However, since Postgres always generates sequential paths first (*) and parallel paths afterwards, we would end
+             * up in a situation were there are no sequential paths left. This raises an error in set_cheapest().
+             * If we encouter a parallel new path, we know for certain that Postgres has already generated all sequential paths
+             * and we can safely include the parallelization check here.
+             *
+             * (*) actually, for upper rels the order is reversed, at least sometimes. But this does not seem to matter here
+             */
+            keep_placeholder = check_all_hints(current_planner_root, parent_rel, placeholder_path,
+                                               par_subpath != NULL);
 
             if (!keep_placeholder)
             {
@@ -839,12 +962,12 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
         }
 
         if (prev_add_path_hook)
-            (*prev_add_path_hook)(parent_rel, new_path);
+            (*prev_add_path_hook)(parent_rel, path);
         else
-            standard_add_path(parent_rel, new_path);
+            standard_add_path(parent_rel, path);
     }
     else
-        FreePath(new_path);
+        FreePath(path);
 
     /*
      *
@@ -877,7 +1000,7 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *new_path)
  * use new_path->parent->relids! This is because parent_rel->relids is not set for upper rels (for whatever reason..).
  */
 extern "C" void
-hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *new_path)
+hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *path)
 {
     JoinOrder *join_order;
     bool keep_new;
@@ -886,15 +1009,15 @@ hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *new_path)
     if (!current_hints || !current_hints->contains_hint || parent_rel->partial_pathlist == NIL)
     {
         if (prev_add_path_hook)
-            (*prev_add_path_hook)(parent_rel, new_path);
+            (*prev_add_path_hook)(parent_rel, path);
         else
-            standard_add_partial_path(parent_rel, new_path);
+            standard_add_partial_path(parent_rel, path);
         return;
     }
 
     if (current_hints->parallel_mode == PARMODE_SEQUENTIAL)
     {
-        FreePath(new_path);
+        FreePath(path);
         return;
     }
 
@@ -909,7 +1032,7 @@ hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *new_path)
             JoinOrder *prefix = (JoinOrder *) lfirst(lc);
             JoinOrder_Comparison cmp;
 
-            cmp = join_order_compare(prefix, new_path, current_planner_root->all_baserels);
+            cmp = join_order_compare(prefix, path, current_planner_root->all_baserels);
             if (cmp == JO_EQUAL)
             {
                 matching_prefix = true;
@@ -926,19 +1049,19 @@ hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *new_path)
 
     if (!all_prefixes_disjunct && !matching_prefix)
     {
-        FreePath(new_path);
+        FreePath(path);
         return;
     }
 
     join_order = current_hints->join_order_hint != NULL
-                 ? traverse_join_order(current_hints->join_order_hint, PathRelids(new_path))
+                 ? traverse_join_order(current_hints->join_order_hint, PathRelids(path))
                  : NULL;
 
-    keep_new = path_satisfies_hints(new_path, join_order, NULL, NULL);
+    keep_new = path_satisfies_hints(path, join_order, NULL, NULL);
 
     if (!keep_new)
     {
-        FreePath(new_path);
+        FreePath(path);
         return;
     }
 
@@ -952,7 +1075,7 @@ hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *new_path)
             if (current_hints->parallelize_entire_plan || !current_hints->parallel_rels)
                 keep_new = true;
             else
-                keep_new = bms_is_subset(PathRelids(new_path), current_hints->parallel_rels);
+                keep_new = bms_is_subset(PathRelids(path), current_hints->parallel_rels);
             break;
 
         default:
@@ -982,12 +1105,12 @@ hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *new_path)
         }
 
         if (prev_add_partial_path_hook)
-            (*prev_add_partial_path_hook)(parent_rel, new_path);
+            (*prev_add_partial_path_hook)(parent_rel, path);
         else
-            standard_add_partial_path(parent_rel, new_path);
+            standard_add_partial_path(parent_rel, path);
     }
     else
-        FreePath(new_path);
+        FreePath(path);
 }
 
 extern "C" int
@@ -1520,6 +1643,12 @@ _PG_init(void)
     DefineCustomBoolVariable("pglab.check_final_path",
                              "If enabled, checks whether the final path satisfies all hints and errors if not.", NULL,
                              &pglab_check_final_path, true,
+                             PGC_USERSET, 0,
+                             NULL, NULL, NULL);
+
+    DefineCustomBoolVariable("pglab.trace",
+                             "Show detailed tracing information during path pruning.", NULL,
+                             &trace_pruning, false,
                              PGC_USERSET, 0,
                              NULL, NULL, NULL);
 
