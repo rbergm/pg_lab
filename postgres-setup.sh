@@ -152,9 +152,8 @@ if [ -f GNUmakefile ] ; then
 fi
 
 if [ "$DEBUG_BUILD" = "true" ] ; then
-    meson setup build --prefix=$PG_TARGET_DIR/build \
+    meson setup build --prefix=$PG_TARGET_DIR \
         --buildtype=debug \
-        --debug \
         --reconfigure \
         -Dplpython=auto \
         -Dicu=enabled \
