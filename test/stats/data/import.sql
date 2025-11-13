@@ -1,5 +1,5 @@
 
-\set localpath `pwd`'/users.csv'
+\set localpath `pwd`'/stats/data/users.csv'
 COPY users (
     Id,
     Reputation,
@@ -18,12 +18,12 @@ COPY users (
 FROM :'localpath'
 DELIMITER ',' NULL 'NULL' CSV HEADER;
 
-\set localpath `pwd`'/badges.csv'
+\set localpath `pwd`'/stats/data/badges.csv'
 COPY badges (Id, UserId, Name, Date)
 FROM :'localpath'
 DELIMITER ',' NULL 'NULL' CSV HEADER;
 
-\set localpath `pwd`'/posts.csv'
+\set localpath `pwd`'/stats/data/posts.csv'
 COPY posts (
     Id,
     PostTypeId,
@@ -49,17 +49,17 @@ COPY posts (
 FROM :'localpath'
 DELIMITER ',' NULL 'NULL' CSV HEADER;
 
-\set localpath `pwd`'/tags.csv'
+\set localpath `pwd`'/stats/data/tags.csv'
 COPY tags (Id, TagName, Count, ExcerptPostId, WikiPostId)
 FROM :'localpath'
 DELIMITER ',' NULL 'NULL' CSV HEADER;
 
-\set localpath `pwd`'/postLinks.csv'
+\set localpath `pwd`'/stats/data/postLinks.csv'
 COPY postLinks (Id, CreationDate, PostId, RelatedPostId, LinkTypeId)
 FROM :'localpath'
 DELIMITER ',' NULL 'NULL' CSV HEADER;
 
-\set localpath `pwd`'/postHistory.csv'
+\set localpath `pwd`'/stats/data/postHistory.csv'
 COPY postHistory (
     Id,
     PostHistoryTypeId,
@@ -73,7 +73,7 @@ COPY postHistory (
 FROM :'localpath'
 DELIMITER ',' NULL 'NULL' CSV HEADER;
 
-\set localpath `pwd`'/comments.csv'
+\set localpath `pwd`'/stats/data/comments.csv'
 COPY comments (
     Id,
     PostId,
@@ -86,7 +86,7 @@ FROM :'localpath'
 DELIMITER ',' NULL 'NULL' CSV HEADER;
 
 
-\set localpath `pwd`'/votes.csv'
+\set localpath `pwd`'/stats/data/votes.csv'
 COPY votes (Id, PostId, VoteTypeId, CreationDate, UserId, BountyAmount)
 FROM :'localpath'
 DELIMITER ',' NULL 'NULL' CSV HEADER;
