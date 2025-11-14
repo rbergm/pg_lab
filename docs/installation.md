@@ -11,13 +11,23 @@ Generally speaking, this is the preferred installation method.
 > [!IMPORTANT]
 > A local installation includes compiling the Postgres source code.
 > Therefore, a number of dependencies and libraries need to be available on your system.
+>
 > On Ubuntu, the following apt command should cover it all:
 > ```sh
 > sudo apt install -y \
->    build-essential meson ninja-build sudo tzdata procps \
+>    build-essential meson ninja-build \
 >    bison flex curl pkg-config cmake llvm clang \
->    git vim unzip zstd default-jre \
+>    zstd default-jre \
 >    libicu-dev libreadline-dev libssl-dev libzstd-dev liblz4-dev libossp-uuid-dev
+> ```
+>
+> On Fedora-like systems, the following should do the trick:
+> ```sh
+> sudo dnf install -y \
+>     make meson ninja cmake \
+>     bison flex llvm clang perl \
+>     libicu-devel readline-devel openssl-devel libzstd-devel lz4-devel \
+>     zstd java-latest-openjd
 > ```
 > On other distributions (including MacOS), install the appropriate counterparts and make sure that they are available on
 > the PATH and/or the C_INCLUDE_PATH and LD_LIBRARY_PATH.

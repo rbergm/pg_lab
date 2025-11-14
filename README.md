@@ -50,7 +50,8 @@ docker run -d --name pg_lab -p 5432:5432 --volume $PWD/docker-volume:/pg_lab pg_
 docker exec -it pg_lab /bin/bash
 ```
 
-See the [Installation](docs/installation.md) documentation for more details on installation and usage of pg_lab.
+See the [Installation](docs/installation.md) documentation for more details on installation (including on other systems)
+and usage of pg_lab.
 
 > [!IMPORTANT]
 > pg_lab is currently only tested Ubuntu/WSL and MacOS.
