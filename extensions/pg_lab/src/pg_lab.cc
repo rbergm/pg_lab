@@ -160,7 +160,9 @@ static PlannerInfo  *current_planner_root = NULL;
 /* The hints that are available for the current query. */
 static PlannerHints *current_hints = NULL;
 
-#define PathRelids(pathptr) (pathptr->parent->relids == NULL /* this is true for upper rels */ \
+#define IS_HINTED() (current_hints != NULL && current_hints->contains_hint)
+
+#define PathRelids(pathptr) (IS_UPPER_REL(pathptr->parent) \
                              ? current_planner_root->all_baserels \
                              : pathptr->parent->relids)
 #define FreePath(pathptr) if (!IsA(pathptr, IndexScan)) { pfree(pathptr); }
@@ -250,454 +252,741 @@ path_to_string(Path *path)
 }
 
 /*
- * Checks, whether the given path has the operator that is required by the current hints.
- *
- * We pass the join_order, because it can serve as a shortcut to the OperatorHint. This is cheaper than performing a hash
- * lookup in the hint table.
- *
- * Notice that we don't recurse into subpaths for joins or intermediate ops (memoize/materialize) here, we just make sure that
- * the top-level operator is correct. However, we do recurse into upper-rel related paths (gather, limit, etc).
+ * Checks, whether the given path is compatible with the join order hint.
+ * 
+ * This includes that
+ * 
+ * a) the corresponding intermediate is computed by the join order, and
+ * b) for joins, both input nodes are also part of the join order
+ * 
+ * If no join order is given, this check is automatically passed.
+ * 
+ * If the path path is found is found, `op_hint` will point to the operator
+ * hint. This can be disabled by nulling `op_hint`.
  */
 static bool
-path_satisfies_operator(Path *path, JoinOrder *join_order, Path *parent_node)
+path_satisfies_joinorder(Path *path, JoinOrder *join_order, OperatorHint **op_hint)
 {
-    Relids        relids;
-    OperatorHint *op_hint;
-    bool          hint_found;
+    Relids       relids;
+    JoinOrder   *current_node;
+    bool         correct_outer, correct_inner;
+    JoinPath    *jpath;
 
-    if (!IsAJoinPath(path) && !IsAScanPath(path) && !IsAIntermediatePath(path))
+    if (!join_order)
+        return true;
+
+    relids = PathRelids(path);
+    current_node = traverse_join_order(join_order, relids);
+    if (!current_node)
+    {
+        /* the path belongs to an intermediate that is not part of the hinted join order */
+        return false;
+    }
+
+    if (op_hint)
+        *op_hint = current_node->physical_op;
+
+    if (current_node->node_type == BASE_REL)
+    {
+        /* we are at a leave node, nothing more to check */
+        return true;
+    }
+
+    /* for join nodes, we also need to make sure that they join their children in the correct order */
+    Assert(IsAJoinPath(path));
+    jpath = (JoinPath *) path;
+
+    /* we cannot be in an upper rel, yet. Therefore it is safe to access relids directly. */
+    correct_outer = bms_equal(jpath->outerjoinpath->parent->relids,
+                              current_node->outer_child->relids);
+    correct_inner = bms_equal(jpath->innerjoinpath->parent->relids,
+                              current_node->inner_child->relids);
+    return correct_outer && correct_inner;
+}
+
+/*
+ * Checks, whether the given path is compatible with the operator hints.
+ * 
+ * This actually includes two different checks:
+ * 
+ * 1. that the path itself has a allowed operator
+ * 2. for joins, that the inner input uses materialization/memoization correctly
+ */
+static bool
+path_satisfies_operators(PlannerHints *hints, Path *path, OperatorHint *op_hint)
+{
+    Relids           relids;
+    JoinPath        *jpath;
+    MergePath       *merge_path;
+    Path            *inner_child;
+    OperatorHint    *inner_hint;
+    bool             hint_found;
+    bool             memo_required, material_required;
+    bool             memo_allowed, material_allowed;
+    bool             memo_used, material_used;
+
+    if (path->parent->reloptkind == RELOPT_UPPER_REL || path->parent->reloptkind == RELOPT_OTHER_UPPER_REL)
     {
         /*
-         * Could be a gather/gather merge path or a path belonging to the upper rel.
-         * We don't force these, so we leave the path be.
+         * We currently only support hints for joins and scans. Everything else needs to be auto-accepted.
          */
         return true;
     }
 
-    hint_found = false;
-    if (join_order)
+    /*
+     * Now that we have the sanity checks out of the way, we need to check two things:
+     * 
+     * 1. whether the path itself has the correct operator
+     * 2. for joins, whether the inner child makes correct use of materialize/memoize operations
+     * 
+     * We perform both checks in sequence. However, this means that we cannot stop if we do not
+     * find a hint for the path's root - it might still be that we have a join with hints on the
+     * input nodes. Even, if the join itself is not hinted.
+     */
+
+    relids = PathRelids(path);
+
+    if (!op_hint)
     {
-        op_hint = join_order->physical_op;
-        hint_found = op_hint != NULL;
+        op_hint = (OperatorHint *) hash_search(hints->operator_hints, &relids,
+                                               HASH_FIND, &hint_found);
     }
 
-    if (!hint_found && current_hints->operator_hints)
+    if (op_hint)
     {
-        /* We use the slightly bogus control flow to fall back to the hint table in case the join order did not do its job. */
-        relids = path->parent->relids;
-        op_hint = (OperatorHint*) hash_search(current_hints->operator_hints,
-                                              &relids, HASH_FIND, &hint_found);
+        /* See above comment on why we need to guard this */
+        PhysicalOperator requested_op;
+        requested_op = op_hint->op;
+        
+        if (requested_op == OP_SEQSCAN && !PathIsA(path, NestLoop))
+            return false;
+        else if (requested_op == OP_IDXSCAN && (!PathIsA(path, IndexScan) || !PathIsA(path, IndexOnlyScan)))
+            return false;
+        else if (requested_op == OP_BITMAPSCAN && !PathIsA(path, BitmapHeapScan))
+            return false;
+        else if (requested_op == OP_NESTLOOP && !PathIsA(path, NestLoop))
+            return false;
+        else if (requested_op == OP_HASHJOIN && !PathIsA(path, HashJoin))
+            return false;
+        else if (requested_op == OP_MERGEJOIN && !PathIsA(path, MergeJoin))
+            return false;
+
+        /* if we got to this point, the hinted operator is either OP_UNKNOWN, or the path has the correct operator */
     }
 
     /*
-     * Materialization and memoization is handled by flags attached to the main operator hint. Therefore, we need to handle
-     * them separately.
-     * Afterwards, we simply switch over the hinted operator and make sure that our path is of the correct type.
+     * For scans we are done at this point. But for joins, we still need to make sure that the inner input uses
+     * materialize/memoize correctly.
+     * 
+     * These checks are a bit complicated, so let's discuss them first:
+     * 
+     * The primary complicating matter is that we allow different hinting modes.
+     * In _anchored_ mode, the optimizer is free to insert additional memoize/materialize nodes as it sees fit.
+     * But if we have a memoize/materialize hint, we still must use the corresponding operator.
+     * In _full_ mode, we must adhere precisely to the given hints. If we do not have a materialize/memoize hint,
+     * we cannot use it.
+     * Our control logic needs to handle both cases adequately.
+     * 
+     * The second complicating matter is that Postgres uses two different ways to express materialization.
+     * The straightforward way is via explicit Material operators. But in additiona, materialization for merge
+     * joins is expressed via the special materialize_inner flag on the join itself.
+     * Again, our control logic needs to handle both.
+     * 
+     * In the end, we basically implement the following truth tables:
+     * (colums are the actual operators in the path, rows are the operators requested by the hints)
+     * 
+     * For _anchored_ mode
+     * +=============+========+==========+========+
+     * | Hint / Path |  Memo  | Material | Other  |
+     * +=============+========+==========+========+
+     * | Memo        | accept | reject   | reject |
+     * +-------------+--------+----------+--------+
+     * | Material    | reject | accept   | reject |
+     * +-------------+--------+----------+--------+
+     * | None        | accept | accept   | accept |
+     * +-------------+--------+----------+--------+
+     * 
+     * For _full_ mode
+     * +=============+========+==========+========+
+     * | Hint / Path |  Memo  | Material | Other  |
+     * +=============+========+==========+========+
+     * | Memo        | accept | reject   | reject |
+     * +-------------+--------+----------+--------+
+     * | Material    | reject | accept   | reject |
+     * +-------------+--------+----------+--------+
+     * | None        | reject | reject   | accept |
+     * +-------------+--------+----------+--------+
+     * 
      */
+    if (!IsAJoinPath(path))
+        return true;
 
-    if (parent_node && current_hints->mode == HINTMODE_FULL)
-    {
-        if (PathIsA(parent_node, Memoize) && (!op_hint || !op_hint->memoize_output))
-        {
-            pglab_trace("Rejecting path %s - full plan does not contain memoize node", path_to_string(path));
-            return false;
-        }
-        else if (PathIsA(parent_node, Material) && (!op_hint || !op_hint->materialize_output))
-        {
-            pglab_trace("Rejecting path %s - full plan does not contain materialize node", path_to_string(path));
-            return false;
-        }
-        else if (PathIsA(parent_node, MergeJoin))
-        {
-            MergePath *merge_parent;
-            merge_parent = (MergePath *) parent_node;
-            merge_parent->materialize_inner = op_hint && op_hint->materialize_output;
-        }
-    }
+    merge_path = PathIsA(path, MergePath) ? (MergePath *) path : NULL; /* for materialize_inner */
+    jpath = (JoinPath *) path;
+    inner_child = jpath->innerjoinpath;
+
+    /* we cannot be in an upper rel, yet. Therefore it is safe to access relids directly. */
+    inner_hint = (OperatorHint *) hash_search(hints->operator_hints, &inner_child->parent->relids,
+                                              HASH_FIND, &hint_found);
 
     if (!hint_found)
-        /* Nothing restricts the choice of operators, we are good to continue */
+    {
+        /* if there are no restrictions on the inner child, we are done. */
         return true;
-
-    if (parent_node && !PathIsA(parent_node, Memoize) && op_hint->memoize_output)
-    {
-        pglab_trace("Rejecting path %s - has to be memoized", path_to_string(path));
-        return false;
-    }
-    else if (parent_node && op_hint->materialize_output)
-    {
-        if (!PathIsA(parent_node, MergeJoin) && !PathIsA(parent_node, Material))
-        {
-            pglab_trace("Rejecting path %s - has to be materialized", path_to_string(path));
-            return false;
-        }
-        else if (PathIsA(parent_node, MergeJoin))
-        {
-            MergePath *merge_parent;
-            merge_parent = (MergePath *) parent_node;
-            merge_parent->materialize_inner = true;
-        }
     }
 
-    switch (op_hint->op)
+    /* first, determine if the hints themselves require a specific operator */
+    memo_required = inner_hint->memoize_output;
+    material_required = inner_hint->materialize_output;
+
+    /* now, check whether we might use the operator even if our hints do not require it */
+    memo_allowed = memo_required || hints->mode == HINTMODE_ANCHORED;
+    material_allowed = material_required || hints->mode == HINTMODE_ANCHORED;
+
+    if (PathIsA(inner_child, Memoize))
     {
-        case OP_UNKNOWN:
-            /* We can't check for OP_UNKNOWN earlier, to make sure that the above special cases are handled appropriately */
-            return true;
-        case OP_SEQSCAN:
-            return PathIsA(path, SeqScan);
-        case OP_IDXSCAN:
-            return PathIsA(path, IndexScan) || PathIsA(path, IndexOnlyScan);
-        case OP_BITMAPSCAN:
-            return PathIsA(path, BitmapHeapScan);
-        case OP_NESTLOOP:
-            return PathIsA(path, NestLoop);
-        case OP_HASHJOIN:
-            return PathIsA(path, HashJoin);
-        case OP_MERGEJOIN:
-            return PathIsA(path, MergeJoin);
-        default:
-            /* We don't check for memoize/materialize here, because these are never root nodes of a path */
-            return false;
+        return memo_allowed && !material_required;
+    }
+    else if (PathIsA(inner_child, Material) || (merge_path && merge_path->materialize_inner))
+    {
+        /* see longer comment above: PG uses two different representations for materialization */
+        return material_allowed && !memo_required;
+    }
+    else
+    {
+        return !memo_required && !material_required;
     }
 }
 
+/*
+ * Extracts the root node of the parallel portion of a path.
+ * 
+ * If the path is entirely sequential, NULL is returned. If a parallel portion is found
+ * (i.e. the path contains a Gather or GatherMerge node), its immediate subpath is returned.
+ * 
+ * Notice that this function does not work on partial paths, they must already be gathered.
+ */
+static Path*
+find_parallel_subpath(Path *path)
+{
+    switch (path->pathtype)
+    {
+        case T_SeqScan:
+        case T_IndexScan:
+        case T_IndexOnlyScan:
+        case T_BitmapIndexScan:
+        case T_BitmapOr:
+        case T_BitmapAnd:
+        case T_BitmapHeapScan:
+        case T_TidScan:
+        case T_TidRangeScan:
+        case T_SubqueryScan:
+        case T_ForeignScan:
+        case T_FunctionScan:
+        case T_ValuesScan:
+        case T_CteScan:
+            return NULL;
+        case T_Append:
+        {
+            AppendPath *apath;
+            ListCell   *lc;
+            apath = (AppendPath *) path;
+            if (apath->first_partial_path < list_length(apath->subpaths))
+            {
+                ereport(ERROR, errmsg("In find_parallel_subpath: AppendPath with partial paths found"));
+            }
+            foreach(lc, apath->subpaths)
+            {
+                Path *subpath = (Path *) lfirst(lc);
+                Path *par_subpath = find_parallel_subpath(subpath);
+                if (par_subpath)
+                    return par_subpath;
+            }
+            return NULL;
+        }
+        case T_MergeAppend:
+        {
+            MergeAppendPath *mpath;
+            ListCell        *lc;
+            mpath = (MergeAppendPath *) path;
+            /* merge-append doesn't support parallel subpaths, yet */
+            foreach(lc, mpath->subpaths)
+            {
+                Path *subpath = (Path *) lfirst(lc);
+                Path *par_subpath = find_parallel_subpath(subpath);
+                if (par_subpath)
+                    return par_subpath;
+            }
+            return NULL;
+        }
+        case T_NestLoop:
+        case T_HashJoin:
+        case T_MergeJoin:
+        {
+            JoinPath *jpath;
+            Path     *outer, *inner;
+            jpath = (JoinPath *) path;
+            outer = find_parallel_subpath(jpath->outerjoinpath);
+            if (outer)
+                return outer;
+            inner = find_parallel_subpath(jpath->innerjoinpath);
+            return inner;
+        }
+        case T_Material:
+        {
+            MaterialPath *mpath;
+            mpath = (MaterialPath *) path;
+            return find_parallel_subpath(mpath->subpath);
+        }
+        case T_Memoize:
+        {
+            MemoizePath *mpath;
+            mpath = (MemoizePath *) path;
+            return find_parallel_subpath(mpath->subpath);
+        }
+        case T_Unique:
+        {
+            UniquePath *upath;
+            upath = (UniquePath *) path;
+            return find_parallel_subpath(upath->subpath);
+        }
+        case T_ProjectSet:
+        {
+            ProjectSetPath *ppath;
+            ppath = (ProjectSetPath *) path;
+            return find_parallel_subpath(ppath->subpath);
+        }
+        case T_Sort:
+        {
+            SortPath *spath;
+            spath = (SortPath *) path;
+            return find_parallel_subpath(spath->subpath);
+        }
+        case T_IncrementalSort:
+        {
+            IncrementalSortPath *ispath;
+            ispath = (IncrementalSortPath *) path;
+            return find_parallel_subpath(ispath->spath.subpath);
+        }
+        case T_Group:
+        {
+            GroupPath *gpath;
+            gpath = (GroupPath *) path;
+            return find_parallel_subpath(gpath->subpath);
+        }
+        case T_Agg:
+        {
+            AggPath *apath;
+            apath = (AggPath *) path;
+            return find_parallel_subpath(apath->subpath);
+        }
+        case T_GroupingSet:
+        {
+            GroupingSetsPath *gspath;
+            gspath = (GroupingSetsPath *) path;
+            return find_parallel_subpath(gspath->subpath);
+        }
+        case T_WindowAgg:
+        {
+            WindowAggPath *wpath;
+            wpath = (WindowAggPath *) path;
+            return find_parallel_subpath(wpath->subpath);
+        }
+        case T_SetOp:
+        {
+            SetOpPath *spath;
+            spath = (SetOpPath *) path;
+            return find_parallel_subpath(spath->subpath);
+        }
+        case T_Limit:
+        {
+            LimitPath *lpath;
+            lpath = (LimitPath *) path;
+            return find_parallel_subpath(lpath->subpath);
+        }
+        case T_Gather:
+        {
+            GatherPath *gpath;
+            gpath = (GatherPath *) path;
+            return gpath->subpath;
+        }
+        case T_GatherMerge:
+        {
+            GatherMergePath *gmpath;
+            gmpath = (GatherMergePath *) path;
+            return gmpath->subpath;
+        }
+        default:
+            ereport(ERROR, errmsg("Unsupported path type %s in find_parallel_subpath",
+                                  pathtype_to_string(path)));
+            return NULL;
+    }
+
+}
 
 /*
- * Checks, whether the given path satisfies all our hints with regards to the assigned operators and the join order.
- *
- * The join order has to be rooted at our current path. If no join order is given, NULL can be passed. Otherwise, a NULL value
- * implies that the path does not satisfy the join order and hence fails the check.
- *
- * If we detect a parallel subpath, we store it in the par_subpath, because the caller might find this information useful to
- * decide whether the parallelization hints are satisfied. This portion of the hints check is explicitly not handled in this
- * function, because it requires more context (e.g. to distinguish between partial and normal paths).
- * If the caller does not care about the parallel subpath, they can pass a NULL pointer.
+ * Checks, if a path from the *pathlist* is compatible with the parallelization hints.
+ * 
+ * NB: This function really only works for paths from the pathlist, i.e. those paths that are
+ * either fully sequential, or paths that have already been gathered. Calling this function
+ * on partial paths will lead to incorrect results.
+ * 
+ * 
  */
 static bool
-path_satisfies_hints(Path *path, JoinOrder *join_node, Path **par_subpath, Path *parent_node)
+path_satisfies_parallelization(PlannerHints *hints, Path *path)
 {
-    JoinPath *jpath;
-    bool inner_valid, outer_valid;
+    Path *par_subpath;
+    if (hints->parallel_mode == PARMODE_DEFAULT)
+    {
+        /* no restrictions on parallelization */
+        return true;
+    }
 
-    if (current_hints->join_order_hint && !join_node)
-        /* We have a join order, but the path is not on it. This is easy, we can reject the path. */
+    par_subpath = find_parallel_subpath(path);
+    switch (hints->parallel_mode)
+    {
+        case PARMODE_SEQUENTIAL:
+            return par_subpath == NULL;
+        case PARMODE_PARALLEL:
+            if (par_subpath == NULL)
+                return false;
+        default:
+            /*
+             * Logic error - thanks to the above check for PARMODE_DEFAULT,
+             * this switch-case should be exhaustive.
+             */
+            Assert(false);
+    }
+
+    if (hints->parallelize_entire_plan)
+        return IS_UPPER_REL(path->parent);
+    else
+        return !IS_UPPER_REL(path->parent)
+            &&  bms_equal(par_subpath->parent->relids, hints->parallel_rels);
+}
+
+/*
+ * Checks, if a partial path is compatible with the parallielization hints.
+ */
+static bool
+partial_path_satisfies_parallelization(PlannerHints *hints, Path *path)
+{
+    if (hints->parallel_mode == PARMODE_DEFAULT)
+    {
+        /* no restrictions on parallelization */
+        return true;
+    }
+    else if (hints->parallel_mode == PARMODE_SEQUENTIAL)
+    {
+        /* if we should only produce sequential paths, we can stop here */
         return false;
+    }
+
+    Assert(hints->parallel_mode == PARMODE_PARALLEL);
+
+    if (hints->parallelize_entire_plan)
+    {
+        /*
+         * We should parallelize the entire plan, so we need to let all
+         * parallel "building blocks" pass.
+         */
+        return true;
+    }
+
+    return !IS_UPPER_REL(path->parent)
+        &&  bms_is_subset(path->parent->relids, hints->parallel_rels);
+}
+
+/*
+ * Checks, whether the given path is on any of the join prefixes
+ * (i.e. the path's join order is equal or part of one of the prefixes).
+ * 
+ * Notice that this check suceeds in two cases:
+ * 
+ * 1. by default, if one of the join prefixes is found on the path's join order.
+ * 2. the path uses a different set of relations than the all of the prefixes
+ * 
+ * In the second case, the current path describes a portion of the query plan
+ * that is not restricted by the join prefixes.
+ * 
+ * For example, consider a query
+ * 
+ * SELECT * FROM R, S, T, U
+ * WHERE  R.a = S.b AND R.a = T.c AND R.a = U.d
+ *  AND S.b = T.c AND S.b = U.d
+ *  AND T.c = U.d;
+ * 
+ * with join prefix (R S) - i.e. R should first be joined with S.
+ * Now, any path that joins T and U will still be accepted, even though they are not
+ * on the join prefix.
+ */
+static bool
+path_satisfies_joinprefixes(Path *path, List *prefixes)
+{
+    ListCell *lc;
+    bool matching_prefix;
+    bool all_disjunct;
+
+    if (!prefixes || bms_num_members(path->parent->relids) <= 1)
+    {
+        /*
+         * We don't need to check anything if
+         * - there are no prefixes at all, or
+         * - if the current path is a base relation (relids == 1)
+         * - if the current path is part of the upper rel (relids == 0)
+         */
+        return true;
+    }
+
+    foreach(lc, prefixes)
+    {
+        JoinOrder *prefix;
+        JoinOrder_Comparison cmp;
+
+        prefix = (JoinOrder *) lfirst(lc);
+        cmp = join_order_compare(prefix, path, current_planner_root->all_baserels);
+
+        if (cmp == JO_EQUAL)
+        {
+            /* found a match, we are done */
+            matching_prefix = true;
+            all_disjunct = false;
+            break;
+        }
+        else if (cmp == JO_DIFFERENT)
+        {
+            /*
+             * There is a prefix for the same portion of the query as our path, but
+             * our path is not compatible with the prefix.
+             * Continue searching, maybe another prefix matches.
+             */
+            all_disjunct = false;
+        }
+        #ifdef  USE_ASSERT_CHECKING
+        else
+        {
+            /*
+             * Our path is for a portion of the query that is not included in the prefix.
+             */
+            Assert(cmp == JO_DISJOINT);
+        }
+        #endif   
+    }
+
+    return matching_prefix || all_disjunct;
+}
+
+
+static bool
+check_path_recursive(PlannerHints *hints, Path *path, bool is_partial)
+{
+    OperatorHint *op_hint;
 
     /*
-     * Now the easy checks are over and we need to do some actual work.
-     * This involves recursion, so we should be as paranoid as the normal planner implementation.
+     * TODO: the current implementation is incredibly inefficient.
+     * We basically traverse the entire path from scratch for each check.
      */
+
     check_stack_depth();
 
-    /*
-     * First up, we handle all intermediate operators
-     */
-    if (!IsAJoinPath(path) && !IsAScanPath(path))
+    if (!path_satisfies_joinprefixes(path, hints->join_prefixes))
     {
-        switch (path->pathtype)
-        {
-            case T_Gather:
-            {
-                GatherPath *gpath = (GatherPath*) path;
-                if (par_subpath != NULL)
-                    *par_subpath = gpath->subpath;
-                return path_satisfies_hints(gpath->subpath, join_node, par_subpath, path);
-            }
-
-            case T_GatherMerge:
-            {
-                GatherMergePath *gmpath = (GatherMergePath*) path;
-                if (par_subpath != NULL)
-                    *par_subpath = gmpath->subpath;
-                return path_satisfies_hints(gmpath->subpath, join_node, par_subpath, path);
-            }
-
-            case T_Memoize:
-            {
-                MemoizePath *mempath = (MemoizePath*) path;
-                return path_satisfies_hints(mempath->subpath, join_node, par_subpath, path);
-            }
-
-            case T_Material:
-            {
-                MaterialPath *matpath = (MaterialPath*) path;
-                return path_satisfies_hints(matpath->subpath, join_node, par_subpath, path);
-            }
-
-            case T_Sort:
-            {
-                SortPath *spath = (SortPath*) path;
-                return path_satisfies_hints(spath->subpath, join_node, par_subpath, path);
-            }
-
-            case T_IncrementalSort:
-            {
-                IncrementalSortPath *ispath = (IncrementalSortPath*) path;
-                return path_satisfies_hints((ispath->spath).subpath, join_node, par_subpath, path);
-            }
-
-            case T_Group:
-            {
-                GroupPath *gpath = (GroupPath*) path;
-                return path_satisfies_hints(gpath->subpath, join_node, par_subpath, path);
-            }
-
-            case T_Agg:
-            {
-                AggPath *apath = (AggPath*) path;
-                return path_satisfies_hints(apath->subpath, join_node, par_subpath, path);
-            }
-
-            case T_Limit:
-            {
-                LimitPath *lpath = (LimitPath*) path;
-                return path_satisfies_hints(lpath->subpath, join_node, par_subpath, path);
-            }
-
-            case T_Result:
-            {
-                if (IsA(path, ProjectionPath))
-                {
-                    ProjectionPath *projpath = (ProjectionPath*) path;
-                    return path_satisfies_hints(projpath->subpath, join_node, par_subpath, path);
-                }
-                else if (IsA(path, ProjectSetPath))
-                {
-                    ProjectSetPath *projpath = (ProjectSetPath*) path;
-                    return path_satisfies_hints(projpath->subpath, join_node, par_subpath, path);
-                }
-                else
-                    ereport(ERROR, errmsg("[pg_lab] Cannot hint query. Result path is not supported: %s",
-                                          nodeToString(path)));
-                break;
-            }
-
-            default:
-                ereport(ERROR, errmsg("[pg_lab] Cannot hint query. Path type is not supported: %s",
-                                      nodeToString(path)));
-                break;
-        }
-    }
-
-    /*
-     * At this point we know that our path is either a join path or a scan path.
-     * To check its validity, we first check the associated operator (because this check is usually cheaper).
-     * Then, we check if the path is on the hinted join order.
-     * Finally, for join paths we also need to recurse into the child paths.
-     */
-
-    if  (!path_satisfies_operator(path, join_node, parent_node))
+        pglab_trace("Rejecting path %s - does not satisfy join prefixes", path_to_string(path));
         return false;
-
-    if (!join_node)
-    {
-        /*
-         * When we don't have a join order to enforce, we just need to recurse into the child nodes to make sure they use the
-         * correct operators.
-         */
-
-        if (IsAJoinPath(path))
-        {
-            jpath = (JoinPath *) path;
-
-            /*
-             * We cannot use the shortcut logic here, because we still need to check for parallelism in both paths!
-             *
-             * Even though it might reasonable to assume that a parallel path is of no use if it violates the hinted operators
-             * (and right now this is indeed the case), using the shortcut logic here might lead to very subtle bugs in the
-             * future. For example, we might be interested in the parallel subpath regardless of the operator hint
-             * compatibility at some point and for whatever reason.
-             */
-
-            inner_valid = path_satisfies_hints(jpath->innerjoinpath, NULL, par_subpath, path);
-            outer_valid = path_satisfies_hints(jpath->outerjoinpath, NULL, par_subpath, path);
-            return inner_valid && outer_valid;
-        }
-        else if (IsAScanPath(path))
-            return true;
     }
-
-    if (!bms_equal(path->parent->relids, join_node->relids))
+    
+    op_hint = NULL;
+    if (!path_satisfies_joinorder(path, hints->join_order_hint, &op_hint))
     {
-        /* Make sure that we satisfy the join order */
-        pglab_trace("Rejecting path %s - not on join order", path_to_string(path));
+        pglab_trace("Rejecting path %s - does not satisfy join order", path_to_string(path));
         return false;
     }
 
-    if (IsAScanPath(path))
-        /*
-         * Scan paths can't recurse further, except for bitmap scans.
-         * And we currently don't care about their specific structure.
-         */
-        return true;
+    if (!path_satisfies_operators(hints, path, op_hint))
+    {
+        pglab_trace("Rejecting path %s - does not satisfy operator hints", path_to_string(path));
+        return false;
+    }
 
-    /*
-     * At this point we know for certain that this must be a join path and we know that the intermediate is indeed on our
-     * hinted join order. Now, we just need to make sure that this is also the case for our child paths.
-     */
-    Assert(IsAJoinPath(path));
-
-    jpath = (JoinPath*) path;
-
-    /* Once again we should not use the shortcut syntax here, see comment above. */
-    inner_valid = path_satisfies_hints(jpath->innerjoinpath, join_node->inner_child, par_subpath, path);
-    outer_valid = path_satisfies_hints(jpath->outerjoinpath, join_node->outer_child, par_subpath, path);
-    return inner_valid && outer_valid;
-}
-
-/*
- * For parallel Result() hints, checks whether the given path satisfies is compatible with the parallelization hints.
- *
- * In order for this condition to be satisfied, the path must be part of the upper rel if the current query requires an upper
- * rel and it must perform upper rel-specific operations (e.g. sorting, grouping, etc).
- *
- * If the current query does not require an upper rel, the path can do whatever operations it wants.
- *
- * par_subpath is the part of the plan that immediately follows the gather node, i.e. the subpath that is executed in parallel.
- * It might not be NULL.
- */
-static bool
-upper_rel_satisfies_parallelization(RelOptInfo *parent_rel, Path *par_subpath)
-{
-    Query *query;
-    bool   passed;
-    bool   requires_post_join;
-
-    query = current_planner_root->parse;
-    requires_post_join = query->hasAggs ||
-                         query->groupClause ||
-                         query->groupingSets ||
-                         current_planner_root->hasHavingQual ||
-                         query->hasWindowFuncs ||
-                         query->sortClause ||
-                         query->distinctClause ||
-                         query->setOperations;
-
-    if (requires_post_join)
-        passed = !IsAJoinPath(par_subpath) &&
-                 !IsAScanPath(par_subpath) &&
-                  bms_equal(current_hints->parallel_rels, parent_rel->relids);
+    if (is_partial)
+    {
+        if (!partial_path_satisfies_parallelization(hints, path))
+        {
+            pglab_trace("Rejecting (partial) path %s - does not satisfy parallelization hints", path_to_string(path));
+            return false;
+        }
+    }
     else
-        passed = bms_equal(current_hints->parallel_rels, parent_rel->relids);
-
-    return passed;
-}
-
-/*
- * This function only works for full (i.e. gathered or sequential) paths, not for those candidates that are processed
- * by add_partial_path()!
- */
-static bool
-path_satisfies_parallelization(RelOptInfo* parent_rel, Path *par_subpath)
-{
-    switch (current_hints->parallel_mode)
     {
-        case PARMODE_DEFAULT:
-            /*
-             * In default mode we do not control the creation of parallel plans. Therefore we just accept the new path.
-             */
-            return true;
-
-        case PARMODE_SEQUENTIAL:
-            /*
-             * We are hinted to only produce sequential paths, but we are currently dealing with a parallel path.
-             * It is safe to reject it.
-             */
-            return par_subpath == NULL;
-
-        case PARMODE_PARALLEL:
-            if (!par_subpath)
-                /*
-                * We should only produce parallel plans but we are currently dealing with a sequential path.
-                * This path has no chance of being part of the final plan.
-                */
-                return false;
-
-            if (current_hints->parallelize_entire_plan)
-                return upper_rel_satisfies_parallelization(parent_rel, par_subpath);
-            else if (!current_hints->parallel_rels)
-                /*
-                * We should only produce parallel plans, but it does not matter which part of the plan is executed in
-                * parallel. We can just accept the current (sub)-path.
-                */
-                return true;
-            else
-                /*
-                 * If we should parallelize a specific portion of the query plan (and this portion is not part of the
-                 * upper rel), we need to make sure that this is the correct portion.
-                 */
-                return (IsAScanPath(par_subpath) || IsAJoinPath(par_subpath)) &&
-                        bms_equal(current_hints->parallel_rels, PathRelids(par_subpath));
-
-        default:
-            ereport(ERROR, errmsg("Unknown parallel mode"));
-            return false; /* keep the compiler quiet */
-    }
-}
-
-static bool
-check_all_hints(PlannerInfo *root, RelOptInfo *rel, Path *path, bool force_parallelization_check)
-{
-    JoinOrder *join_order;
-    Path *par_subpath;
-    bool satisfies_hints;
-    bool matching_prefix, all_prefixes_disjunct;
-
-    if (!current_hints || !current_hints->contains_hint)
-        return true;
-
-    matching_prefix = false;
-    all_prefixes_disjunct = true;
-    if (current_hints->join_prefixes && bms_num_members(root->all_baserels) > 1)
-    {
-        ListCell *lc;
-
-        foreach (lc, current_hints->join_prefixes)
+        if (!path_satisfies_parallelization(hints, path))
         {
-            JoinOrder *prefix = (JoinOrder *) lfirst(lc);
-            JoinOrder_Comparison cmp;
-
-            cmp = join_order_compare(prefix, path, current_planner_root->all_baserels);
-            if (cmp == JO_EQUAL)
-            {
-                matching_prefix = true;
-                all_prefixes_disjunct = false;
-                break;
-            }
-            else if (cmp == JO_DIFFERENT)
-            {
-                all_prefixes_disjunct = false;
-                continue;
-            }
+            pglab_trace("Rejecting path %s - does not satisfy parallelization hints", path_to_string(path));
+            return false;
         }
     }
 
-    if (!all_prefixes_disjunct && !matching_prefix)
+    switch (path->pathtype)
     {
-        pglab_trace("Rejecting path %s - does not match any join prefix", path_to_string(path));
-        return false;
+        case T_SeqScan:
+        case T_IndexScan:
+        case T_IndexOnlyScan:
+        case T_BitmapIndexScan:
+        case T_BitmapOr:
+        case T_BitmapAnd:
+        case T_BitmapHeapScan:
+        case T_TidScan:
+        case T_TidRangeScan:
+        case T_SubqueryScan:
+        case T_ForeignScan:
+        case T_FunctionScan:
+        case T_ValuesScan:
+        case T_CteScan:
+            /*
+             * We are at a scan node and all checks have passed.
+             * This path is good to go.
+             */
+            return true;
+        case T_Append:
+        {
+            AppendPath  *apath;
+            ListCell    *lc;
+            apath = (AppendPath *) path;
+            foreach(lc, apath->subpaths)
+            {
+                Path *subpath = (Path *) lfirst(lc);
+                if (!check_path_recursive(hints, subpath, is_partial))
+                    return false;
+            }
+            return true;
+        }
+        case T_MergeAppend:
+        {
+            MergeAppendPath *mpath;
+            ListCell        *lc;
+            mpath = (MergeAppendPath *) path;
+            foreach(lc, mpath->subpaths)
+            {
+                Path *subpath = (Path *) lfirst(lc);
+                if (!check_path_recursive(hints, subpath, is_partial))
+                    return false;
+            }
+            return true;
+        }
+        case T_NestLoop:
+        case T_HashJoin:
+        case T_MergeJoin:
+        {
+            JoinPath *jpath;
+            jpath = (JoinPath *) path;
+            if (!check_path_recursive(hints, jpath->outerjoinpath, is_partial))
+                return false;
+            
+            /*
+             * For parallel plans, the PG optimizer uses a partial path as the outer path but
+             * selects the inner path from the plain pathlist. Naively, one would assume that
+             * we can pass is_partial = false to the inner path check. However, this would break
+             * the recursive parallelization checks since we require a partial parent path but
+             * supplied a sequential inner path. The check has no knowledge that the inner path
+             * will actually become part of a partial join later one. To circumvent this issue,
+             * we simply pass the same is_partial flag to both sides. Now, the check for the inner
+             * path (errorneously) assumes that it is part of a partial path, too.
+             */
+            if (!check_path_recursive(hints, jpath->innerjoinpath, is_partial))
+                return false;
+            return true;
+        }
+        case T_Material:
+        {
+            MaterialPath *mpath;
+            mpath = (MaterialPath *) path;
+            return check_path_recursive(hints, mpath->subpath, is_partial);
+        }
+        case T_Memoize:
+        {
+            MemoizePath *mpath;
+            mpath = (MemoizePath *) path;
+            return check_path_recursive(hints, mpath->subpath, is_partial);
+        }
+        case T_Unique:
+        {
+            UniquePath *upath;
+            upath = (UniquePath *) path;
+            return check_path_recursive(hints, upath->subpath, is_partial);
+        }
+        case T_ProjectSet:
+        {
+            ProjectSetPath *ppath;
+            ppath = (ProjectSetPath *) path;
+            return check_path_recursive(hints, ppath->subpath, is_partial);
+        }
+        case T_Sort:
+        {
+            SortPath *spath;
+            spath = (SortPath *) path;
+            return check_path_recursive(hints, spath->subpath, is_partial);
+        }
+        case T_IncrementalSort:
+        {
+            IncrementalSortPath *ispath;
+            ispath = (IncrementalSortPath *) path;
+            return check_path_recursive(hints, ispath->spath.subpath, is_partial);
+        }
+        case T_Group:
+        {
+            GroupPath *gpath;
+            gpath = (GroupPath *) path;
+            return check_path_recursive(hints, gpath->subpath, is_partial);
+        }
+        case T_Agg:
+        {
+            AggPath *apath;
+            apath = (AggPath *) path;
+            return check_path_recursive(hints, apath->subpath, is_partial);
+        }
+        case T_GroupingSet:
+        {
+            GroupingSetsPath *gspath;
+            gspath = (GroupingSetsPath *) path;
+            return check_path_recursive(hints, gspath->subpath, is_partial);
+        }
+        case T_WindowAgg:
+        {
+            WindowAggPath *wpath;
+            wpath = (WindowAggPath *) path;
+            return check_path_recursive(hints, wpath->subpath, is_partial);
+        }
+        case T_SetOp:
+        {
+            SetOpPath *spath;
+            spath = (SetOpPath *) path;
+            return check_path_recursive(hints, spath->subpath, is_partial);
+        }
+        case T_Limit:
+        {
+            LimitPath *lpath;
+            lpath = (LimitPath *) path;
+            return check_path_recursive(hints, lpath->subpath, is_partial);
+        }
+        case T_Gather:
+        {
+            GatherPath *gpath;
+            gpath = (GatherPath *) path;
+            return check_path_recursive(hints, gpath->subpath, is_partial);
+        }
+        case T_GatherMerge:
+        {
+            GatherMergePath *gmpath;
+            gmpath = (GatherMergePath *) path;
+            return check_path_recursive(hints, gmpath->subpath, is_partial);
+        }
+        default:
+            ereport(ERROR, errmsg("Unsupported path type %s in check_path_recursive",
+                                  pathtype_to_string(path)));
+            return false;
     }
-
-    join_order = current_hints->join_order_hint
-                 ? traverse_join_order(current_hints->join_order_hint, PathRelids(path))
-                 : NULL;
-
-    par_subpath = NULL;
-    satisfies_hints = path_satisfies_hints(path, join_order, &par_subpath, NULL);
-    if (!satisfies_hints)
-    {
-        pglab_trace("Rejecting path %s - does not satisfy all hints", path_to_string(path));
-        return false;
-    }
-
-    if (force_parallelization_check || par_subpath)
-        satisfies_hints = path_satisfies_parallelization(rel, par_subpath);
-
-    if (!satisfies_hints)
-        pglab_trace("Rejecting path %s - does not satisfy parallelization hints", path_to_string(path));
-    return satisfies_hints;
 }
+
 
 /*
  * Our custom planner hook is required because this is the last point during the Postgres planning phase where the raw query
@@ -803,8 +1092,8 @@ hint_aware_final_path_callback(PlannerInfo *root, RelOptInfo *rel, Path *best_pa
     if (current_hints && current_hints->contains_hint)
     {
         if (pglab_check_final_path &&
-            !check_all_hints(root, rel, best_path, true))
-            ereport(ERROR, errmsg("pg_lab could not find a valid path that satisfies all hints"));
+            !check_path_recursive(current_hints, best_path, false))
+            ereport(ERROR, errmsg("pg_lab could not find a vcouldalid path that satisfies all hints"));
     }
 
     if (prev_final_path_callback)
@@ -850,267 +1139,174 @@ hint_aware_add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost, Li
         return standard_add_partial_path_precheck(parent_rel, total_cost, pathkeys);
 }
 
-/*
- * The magic sauce that makes pg_lab's hinting work.
- *
- * Conceptually, this hook's job is quite straightforward: whenever Postgres generates a new path, we check whether it
- * satisfies the given hints. If it does, we let it through to the standard add_path() function. Otherwise, we exit.
- *
- * However, there are many subtleties that we need to take care of, especially with regards to parallel plans. These issues
- * along with our solutions are described directly in the code below.
- *
- * TODO:
- *  pfree() rejected non-index scan paths
- *  always prune existing paths once we accept a new path. Make sure to also include parallelization-based pruning!
- *
- *
- * NB: in order for the implementation to work correctly, we cannot use parent_rel->relids ever! Instead, we always need to
- * use path->parent->relids! This is because parent_rel->relids is not set for upper rels (for whatever reason..).
- */
+
+#define PG_ADD_PATH(rel, path) \
+    { \
+        if (prev_add_path_hook) \
+            (*prev_add_path_hook)(rel, path); \
+        else \
+            standard_add_path(rel, path); \
+    }
+
+#define PG_ADD_PARTIAL_PATH(rel, path) \
+    { \
+        if (prev_add_partial_path_hook) \
+            (*prev_add_partial_path_hook)(rel, path); \
+        else \
+            standard_add_partial_path(rel, path); \
+    }
+
+static void
+evict_path(Path *path, bool is_partial)
+{
+    OperatorHint *op_hint;
+    bool hint_found;
+    if (!PathIsA(path, IndexPath))
+    {
+        pfree(path);
+        return;
+    }
+
+    /*
+     * Index paths make our lives hard: even if they do not satisfy our hints, they
+     * might still be required. This is because constructing a bitmap path relies on
+     * the index paths.
+     * Therefore, if we hint to use a bitmap path, we cannot evict the index path beforehand.
+     */
+
+    op_hint = (OperatorHint *) hash_search(current_hints->operator_hints, &path->parent->relids,
+                                           HASH_FIND, &hint_found);
+    if (!hint_found || op_hint->op != OP_BITMAPSCAN)
+    {
+        pfree(path);
+        return;
+    }
+
+    if (is_partial)
+    {
+        PG_ADD_PARTIAL_PATH(path->parent, path);
+    }
+    else
+    {
+        PG_ADD_PATH(path->parent, path);
+    }
+
+}
+
+
 extern "C" void
 hint_aware_add_path(RelOptInfo *parent_rel, Path *path)
 {
-    Path      *par_subpath;
-    JoinOrder *join_order;
-    bool       keep_new;
-    bool       matching_prefix, all_prefixes_disjunct;
+    OperatorHint *op_hint;
 
-    if (!current_hints || !current_hints->contains_hint || parent_rel->pathlist == NIL)
+    CHECK_FOR_INTERRUPTS();
+
+    if (parent_rel->pathlist == NIL || !IS_HINTED())
     {
-        if (prev_add_path_hook)
-            (*prev_add_path_hook)(parent_rel, path);
-        else
-            standard_add_path(parent_rel, path);
+        PG_ADD_PATH(parent_rel, path);
         return;
     }
 
-    /* We first check for structural compatibility with our hints. */
-
-    matching_prefix = false;
-    all_prefixes_disjunct = true;
-    if (current_hints->join_prefixes && bms_num_members(parent_rel->relids) > 1)
+    if (!path_satisfies_joinprefixes(path, current_hints->join_prefixes))
     {
-        ListCell *lc;
-
-        foreach (lc, current_hints->join_prefixes)
-        {
-            JoinOrder *prefix = (JoinOrder *) lfirst(lc);
-            JoinOrder_Comparison cmp;
-
-            cmp = join_order_compare(prefix, path, current_planner_root->all_baserels);
-            if (cmp == JO_EQUAL)
-            {
-                matching_prefix = true;
-                all_prefixes_disjunct = false;
-                break;
-            }
-            else if (cmp == JO_DIFFERENT)
-            {
-                all_prefixes_disjunct = false;
-                continue;
-            }
-        }
+        pglab_trace("Rejecting path %s - does not satisfy join prefixes", path_to_string(path));
+        evict_path(path, false);
+        return;
     }
-
-    if (!all_prefixes_disjunct && !matching_prefix)
+    
+    op_hint = NULL;
+    if (!path_satisfies_joinorder(path, current_hints->join_order_hint, &op_hint))
     {
-        FreePath(path);
+        pglab_trace("Rejecting path %s - does not satisfy join order", path_to_string(path));
+        evict_path(path, false);
         return;
     }
 
-
-    join_order = current_hints->join_order_hint != NULL
-                 ? traverse_join_order(current_hints->join_order_hint, PathRelids(path))
-                 : NULL;
-
-    /*
-     * We perform the structural and parallelization-based checks sequentially, because the structural check sets the
-     * parallel subpaths. This subpath in turn serves as the primary input for the parallelization check.
-     */
-    par_subpath = NULL;
-    keep_new = path_satisfies_hints(path, join_order, &par_subpath, NULL);
-
-    if (keep_new && par_subpath)
-        keep_new = path_satisfies_parallelization(parent_rel, par_subpath);
-
-    if (keep_new)
+    if (!path_satisfies_operators(current_hints, path, op_hint))
     {
-        if (list_length(parent_rel->pathlist) == 1)
-        {
-            Path *placeholder_path;
-            bool keep_placeholder;
-
-            placeholder_path = (Path *) linitial(parent_rel->pathlist);
-
-            /* We only need to check for parallelization, if the new path is a parallel path.
-             * Otherwise, we might reject all sequential paths when the current relation should be executed in parallel.
-             * However, since Postgres always generates sequential paths first (*) and parallel paths afterwards, we would end
-             * up in a situation were there are no sequential paths left. This raises an error in set_cheapest().
-             * If we encouter a parallel new path, we know for certain that Postgres has already generated all sequential paths
-             * and we can safely include the parallelization check here.
-             *
-             * (*) actually, for upper rels the order is reversed, at least sometimes. But this does not seem to matter here
-             */
-            keep_placeholder = check_all_hints(current_planner_root, parent_rel, placeholder_path,
-                                               par_subpath != NULL);
-
-            if (!keep_placeholder)
-            {
-                parent_rel->pathlist = list_delete_first(parent_rel->pathlist);
-                FreePath(placeholder_path);
-            }
-        }
-
-        if (prev_add_path_hook)
-            (*prev_add_path_hook)(parent_rel, path);
-        else
-            standard_add_path(parent_rel, path);
+        pglab_trace("Rejecting path %s - does not satisfy operator hints", path_to_string(path));
+        evict_path(path, false);
+        return;
     }
-    else
-        FreePath(path);
 
-    /*
-     *
-     * OUTDATED
-     * At this point we know that the new path at least satisfies the hints regarding join, scan and intermediate
-     * operators. It is also on the hinted join order.
-     *
-     * Now, we just need to make sure that the path is also compatible with our parallelization hints. However, this turns
-     * out to be much more complicated than it seems at first glance.
-     *
-     * This is mostly due to the fact that there are a lot of different cases that we need to handle. add_path() is called
-     * for both strictly sequential paths and parallel paths that have been gathered. Furthermore, it handles paths during
-     * the join phase as well as for the upper rel. But the logical flow between these two phases is reversed: whereas
-     * gather paths are only consider after their sequential counterparts during the join phase, the upper rel first
-     * considers gathering the partial paths and afterwards sequential ones.
-     *
-     * This is bad, because at the end of each of the sub-phases, set_cheapest() is called. But set_cheapest() fails the
-     * entire query if there are no paths. We encounter this case frequently when using parallel hints.
-     * The solution is the spaghetti-ish control flow logic below.
-     * We try our best to explain each of the branches, but it is still quite convoluted.
-     *
-     * Query optimization is just complicated, man.
+    if (!path_satisfies_parallelization(current_hints, path))
+    {
+        pglab_trace("Rejecting path %s - does not satisfy parallelization hints", path_to_string(path));
+        evict_path(path, false);
+        return;
+    }
+
+    /* 
+     * At this point we will definitely accept the new path. The only remaining question
+     * is whether we need to evict one of the existing paths.
+     * This happens, if we previously accepted a path not because it satisfied the hints, but because
+     * it was the only known path for the relation so far (remember that set_cheapest() errors for empty
+     * pathlists and we therefore always need at least one path).
+     * 
+     * This situation may only occur, if there is exactly one path in the pathlist - if there are multiple
+     * paths, these had to pass through hint_aware_add_path() already and survived all checks, including
+     * this eviction logic.
+     * 
+     * We basically check, if the existing path satisfies all hints. If it does not, we evict it.
      */
+
+    if (list_length(parent_rel->pathlist) == 1)
+    {
+        Path *placeholder;
+        placeholder = (Path *) linitial(parent_rel->pathlist);
+        if (!check_path_recursive(current_hints, placeholder, false))
+        {
+            parent_rel->pathlist = list_delete_first(parent_rel->pathlist);
+            evict_path(placeholder, false);
+        }
+    }
+
+    PG_ADD_PATH(parent_rel, path);
 }
 
-/*
- * TODO
- *
- * NB: in order for the implementation to work correctly, we cannot use parent_rel->relids ever! Instead, we always need to
- * use new_path->parent->relids! This is because parent_rel->relids is not set for upper rels (for whatever reason..).
- */
 extern "C" void
 hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *path)
 {
-    JoinOrder *join_order;
-    bool keep_new;
-    bool matching_prefix, all_prefixes_disjunct;
+    OperatorHint *op_hint;
 
-    if (!current_hints || !current_hints->contains_hint || parent_rel->partial_pathlist == NIL)
+    CHECK_FOR_INTERRUPTS();
+
+    if (parent_rel->pathlist == NIL || !IS_HINTED())
     {
-        if (prev_add_path_hook)
-            (*prev_add_path_hook)(parent_rel, path);
-        else
-            standard_add_partial_path(parent_rel, path);
+        PG_ADD_PARTIAL_PATH(parent_rel, path);
         return;
     }
 
-    if (current_hints->parallel_mode == PARMODE_SEQUENTIAL)
+    if (!path_satisfies_joinprefixes(path, current_hints->join_prefixes))
     {
-        FreePath(path);
+        pglab_trace("Rejecting path %s - does not satisfy join prefixes", path_to_string(path));
+        evict_path(path, true);
+        return;
+    }
+    
+    op_hint = NULL;
+    if (!path_satisfies_joinorder(path, current_hints->join_order_hint, &op_hint))
+    {
+        pglab_trace("Rejecting path %s - does not satisfy join order", path_to_string(path));
+        evict_path(path, true);
         return;
     }
 
-    matching_prefix = false;
-    all_prefixes_disjunct = true;
-    if (current_hints->join_prefixes && bms_num_members(parent_rel->relids) > 1)
+    if (!path_satisfies_operators(current_hints, path, op_hint))
     {
-        ListCell *lc;
-
-        foreach (lc, current_hints->join_prefixes)
-        {
-            JoinOrder *prefix = (JoinOrder *) lfirst(lc);
-            JoinOrder_Comparison cmp;
-
-            cmp = join_order_compare(prefix, path, current_planner_root->all_baserels);
-            if (cmp == JO_EQUAL)
-            {
-                matching_prefix = true;
-                all_prefixes_disjunct = false;
-                break;
-            }
-            else if (cmp == JO_DIFFERENT)
-            {
-                all_prefixes_disjunct = false;
-                continue;
-            }
-        }
-    }
-
-    if (!all_prefixes_disjunct && !matching_prefix)
-    {
-        FreePath(path);
+        pglab_trace("Rejecting path %s - does not satisfy operator hints", path_to_string(path));
+        evict_path(path, true);
         return;
     }
 
-    join_order = current_hints->join_order_hint != NULL
-                 ? traverse_join_order(current_hints->join_order_hint, PathRelids(path))
-                 : NULL;
-
-    keep_new = path_satisfies_hints(path, join_order, NULL, NULL);
-
-    if (!keep_new)
+    if (!partial_path_satisfies_parallelization(current_hints, path))
     {
-        FreePath(path);
+        pglab_trace("Rejecting (partial) path %s - does not satisfy parallelization hints", path_to_string(path));
+        evict_path(path, true);
         return;
     }
 
-    switch (current_hints->parallel_mode)
-    {
-        case PARMODE_DEFAULT:
-            keep_new = true;
-            break;
-
-        case PARMODE_PARALLEL:
-            if (current_hints->parallelize_entire_plan || !current_hints->parallel_rels)
-                keep_new = true;
-            else
-                keep_new = bms_is_subset(PathRelids(path), current_hints->parallel_rels);
-            break;
-
-        default:
-            ereport(ERROR, errmsg("Unknown parallel mode"));
-            return; /* keep the compiler quiet */
-    }
-
-    if (keep_new)
-    {
-        if (list_length(parent_rel->partial_pathlist) == 1)
-        {
-            Path *placeholder_path;
-            JoinOrder *placeholder_join_order;
-            bool keep_placeholder;
-
-            placeholder_path = (Path *) linitial(parent_rel->partial_pathlist);
-            placeholder_join_order = current_hints->join_order_hint != NULL
-                                     ? traverse_join_order(current_hints->join_order_hint, PathRelids(placeholder_path))
-                                     : NULL;
-            keep_placeholder = path_satisfies_hints(placeholder_path, placeholder_join_order, NULL, NULL);
-
-            if (!keep_placeholder)
-            {
-                parent_rel->partial_pathlist = list_delete_first(parent_rel->partial_pathlist);
-                FreePath(placeholder_path);
-            }
-        }
-
-        if (prev_add_partial_path_hook)
-            (*prev_add_partial_path_hook)(parent_rel, path);
-        else
-            standard_add_partial_path(parent_rel, path);
-    }
-    else
-        FreePath(path);
+    PG_ADD_PARTIAL_PATH(parent_rel, path);
 }
 
 extern "C" int
