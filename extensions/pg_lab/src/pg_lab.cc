@@ -24,6 +24,11 @@ extern "C" {
 
 #include "hints.h"
 
+/* TODO
+ * Should plan_mode=full also affect parallelization?
+ * I.e. if no parallel workers have been requested --> only produce sequential plans?
+ */
+
 char* JOIN_ORDER_TYPE_FORCED  = (char*) "Forced";
 
 #if PG_VERSION_NUM < 170000
@@ -47,7 +52,10 @@ extern "C" {
     /* Existing optimizer hooks */
     extern planner_hook_type planner_hook;
     static planner_hook_type prev_planner_hook = NULL;
+    extern ExecutorEnd_hook_type ExecutorEnd_hook;
+    static ExecutorEnd_hook_type prev_executor_end_hook = NULL;
 
+    /* pg_lab hook additions */
     extern prepare_make_one_rel_callback_type prepare_make_one_rel_callback;
     static prepare_make_one_rel_callback_type prev_prepare_make_one_rel_hook = NULL;
 
@@ -108,8 +116,7 @@ extern "C" {
     extern final_cost_mergejoin_hook_type final_cost_mergejoin_hook;
     static final_cost_mergejoin_hook_type prev_final_cost_mergejoin_hook = NULL;
 
-    extern ExecutorEnd_hook_type ExecutorEnd_hook;
-    static ExecutorEnd_hook_type prev_executor_end_hook = NULL;
+    /* extension boilerplate */
 
     extern char **current_planner_type;
     extern char **current_join_ordering_type;
@@ -179,7 +186,6 @@ relopt_to_string(RelOptInfo *rel)
     int i = -1;
     StringInfo buf = makeStringInfo();
     bool first = true;
-    appendStringInfo(buf, "{");
 
     while ((i = bms_next_member(rel->relids, i)) >= 0)
     {
@@ -191,52 +197,51 @@ relopt_to_string(RelOptInfo *rel)
         appendStringInfo(buf, "%s", rte->eref->aliasname);
     }
 
-    appendStringInfo(buf, "}");
     return buf->data;
 }
 
 static char *
 pathtype_to_string(Path *path)
 {
-    if (IsA(path, SeqScan))
+    if (PathIsA(path, SeqScan))
         return "SeqScan";
-    else if (IsA(path, IndexScan))
+    else if (PathIsA(path, IndexScan))
         return "IndexScan";
-    else if (IsA(path, IndexOnlyScan))
+    else if (PathIsA(path, IndexOnlyScan))
         return "IndexOnlyScan";
-    else if (IsA(path, BitmapHeapScan))
+    else if (PathIsA(path, BitmapHeapScan))
         return "BitmapHeapScan";
-    else if (IsA(path, TidScan))
+    else if (PathIsA(path, TidScan))
         return "TidScan";
-    else if (IsA(path, SubqueryScan))
+    else if (PathIsA(path, SubqueryScan))
         return "SubqueryScan";
-    else if (IsA(path, FunctionScan))
+    else if (PathIsA(path, FunctionScan))
         return "FunctionScan";
-    else if (IsA(path, ValuesScan))
+    else if (PathIsA(path, ValuesScan))
         return "ValuesScan";
-    else if (IsA(path, CteScan))
+    else if (PathIsA(path, CteScan))
         return "CteScan";
-    else if (IsA(path, ForeignScan))
+    else if (PathIsA(path, ForeignScan))
         return "ForeignScan";
-    else if (IsA(path, NestLoop))
+    else if (PathIsA(path, NestLoop))
         return "NestLoop";
-    else if (IsA(path, MergeJoin))
+    else if (PathIsA(path, MergeJoin))
         return "MergeJoin";
-    else if (IsA(path, HashJoin))
+    else if (PathIsA(path, HashJoin))
         return "HashJoin";
-    else if (IsA(path, Material))
+    else if (PathIsA(path, Material))
         return "Material";
-    else if (IsA(path, Memoize))
+    else if (PathIsA(path, Memoize))
         return "Memoize";
-    else if (IsA(path, Agg) || IsA(path, AggPath))
+    else if (PathIsA(path, Agg))
         return "Aggregate";
-    else if (IsA(path, Gather))
+    else if (PathIsA(path, Gather))
         return "Gather";
-    else if (IsA(path, GatherMerge))
+    else if (PathIsA(path, GatherMerge))
         return "GatherMerge";
-    else if (IsA(path, Sort))
+    else if (PathIsA(path, Sort))
         return "Sort";
-    else if (IsA(path, Limit))
+    else if (PathIsA(path, Limit))
         return "Limit";
     else
         return "<Unknown>";
@@ -247,20 +252,199 @@ path_to_string(Path *path)
 {
     StringInfo buf = makeStringInfo();
     appendStringInfoString(buf, pathtype_to_string(path));
-    appendStringInfo(buf, "(%s)", relopt_to_string(path->parent));
+
+    switch (path->pathtype)
+    {
+        case T_SeqScan:
+        case T_IndexScan:
+        case T_IndexOnlyScan:
+        case T_BitmapHeapScan:
+        case T_TidScan:
+        case T_SubqueryScan:
+        case T_FunctionScan:
+        case T_ValuesScan:
+        case T_CteScan:
+        case T_ForeignScan:
+            appendStringInfo(buf, "[%s]", relopt_to_string(path->parent));
+            break;
+        case T_NestLoop:
+        case T_MergeJoin:
+        case T_HashJoin:
+        {
+            JoinPath *jpath = (JoinPath *) path;
+            appendStringInfo(buf, "(%s, %s)",
+                                path_to_string(jpath->outerjoinpath),
+                                path_to_string(jpath->innerjoinpath));
+            break;
+        }
+        case T_Append:
+        {
+            AppendPath *apath;
+            ListCell *lc;
+            bool first;
+            apath = (AppendPath *) path;
+            appendStringInfoChar(buf, '(');
+            first = true;
+            foreach(lc, apath->subpaths)
+            {
+                Path *subpath = (Path *) lfirst(lc);
+                char *substring;
+                substring = path_to_string(subpath);
+                if (first)
+                {
+                    appendStringInfoString(buf, substring);
+                    first = false;
+                }
+                else
+                {
+                    appendStringInfo(buf, ", %s", substring);
+                }
+            }
+            appendStringInfoChar(buf, ')');
+            break;
+        }
+        case T_MergeAppend:
+        {
+            MergeAppendPath *mapath;
+            ListCell *lc;
+            bool first;
+            mapath = (MergeAppendPath *) path;
+            appendStringInfoChar(buf, '(');
+            first = true;
+            foreach(lc, mapath->subpaths)
+            {
+                Path *subpath = (Path *) lfirst(lc);
+                char *substring;
+                substring = path_to_string(subpath);
+                if (first)
+                {
+                    appendStringInfoString(buf, substring);
+                    first = false;
+                }
+                else
+                {
+                    appendStringInfo(buf, ", %s", substring);
+                }
+            }
+            appendStringInfoChar(buf, ')');
+            break;
+        }
+        case T_Material:
+        {
+            MaterialPath *mpath;
+            mpath = (MaterialPath *) path;
+            appendStringInfo(buf, "(%s)", path_to_string(mpath->subpath));
+            break;
+        }
+        case T_Memoize:
+        {
+            MemoizePath *mpath;
+            mpath = (MemoizePath *) path;
+            appendStringInfo(buf, "(%s)", path_to_string(mpath->subpath));
+            break;
+        }
+        case T_Unique:
+        {
+            UniquePath *upath;
+            upath = (UniquePath *) path;
+            appendStringInfo(buf, "(%s)", path_to_string(upath->subpath));
+            break;
+        }
+        case T_ProjectSet:
+        {
+            ProjectSetPath *ppath;
+            ppath = (ProjectSetPath *) path;
+            appendStringInfo(buf, "(%s)", path_to_string(ppath->subpath));
+            break;
+        }
+        case T_Sort:
+        {
+            SortPath *spath;
+            spath = (SortPath *) path;
+            appendStringInfo(buf, "(%s)", path_to_string(spath->subpath));
+            break;
+        }
+        case T_IncrementalSort:
+        {
+            IncrementalSortPath *ispath;
+            ispath = (IncrementalSortPath *) path;
+            appendStringInfo(buf, "(%s)", path_to_string(ispath->spath.subpath));
+            break;
+        }
+        case T_Group:
+        {
+            GroupPath *gpath;
+            gpath = (GroupPath *) path;
+            appendStringInfo(buf, "(%s)", path_to_string(gpath->subpath));
+            break;
+        }
+        case T_Agg:
+        {
+            AggPath *apath;
+            apath = (AggPath *) path;
+            appendStringInfo(buf, "(%s)", path_to_string(apath->subpath));
+            break;
+        }
+        case T_GroupingSet:
+        {
+            GroupingSetsPath *gspath;
+            gspath = (GroupingSetsPath *) path;
+            appendStringInfo(buf, "(%s)", path_to_string(gspath->subpath));
+            break;
+        }
+        case T_WindowAgg:
+        {
+            WindowAggPath *wpath;
+            wpath = (WindowAggPath *) path;
+            appendStringInfo(buf, "(%s)", path_to_string(wpath->subpath));
+            break;
+        }
+        case T_SetOp:
+        {
+            SetOpPath *spath;
+            spath = (SetOpPath *) path;
+            appendStringInfo(buf, "(%s)", path_to_string(spath->subpath));
+            break;
+        }
+        case T_Limit:
+        {
+            LimitPath *lpath;
+            lpath = (LimitPath *) path;
+            appendStringInfo(buf, "(%s)", path_to_string(lpath->subpath));
+            break;
+        }
+        case T_Gather:
+        {
+            GatherPath *gpath;
+            gpath = (GatherPath *) path;
+            appendStringInfo(buf, "(%s)", path_to_string(gpath->subpath));
+            break;
+        }
+        case T_GatherMerge:
+        {
+            GatherMergePath *gmpath;
+            gmpath = (GatherMergePath *) path;
+            appendStringInfo(buf, "(%s)", path_to_string(gmpath->subpath));
+            break;
+        }
+        default:
+            elog(WARNING, "pg_lab: path_to_string: unsupported path type %d", path->pathtype);
+            break;
+    }
+
     return buf->data;
 }
 
 /*
  * Checks, whether the given path is compatible with the join order hint.
- * 
+ *
  * This includes that
- * 
+ *
  * a) the corresponding intermediate is computed by the join order, and
  * b) for joins, both input nodes are also part of the join order
- * 
+ *
  * If no join order is given, this check is automatically passed.
- * 
+ *
  * If the path path is found is found, `op_hint` will point to the operator
  * hint. This can be disabled by nulling `op_hint`.
  */
@@ -274,6 +458,113 @@ path_satisfies_joinorder(Path *path, JoinOrder *join_order, OperatorHint **op_hi
 
     if (!join_order)
         return true;
+
+    /*
+     * Especially for the final path check in final_path_callback() we might encouter an upper-rel path.
+     * For such a path, we recurse into the child path until we encouter a scan/join path to check.
+     */
+    switch (path->pathtype)
+    {
+        case T_SeqScan:
+        case T_IndexScan:
+        case T_IndexOnlyScan:
+        case T_BitmapHeapScan:
+        case T_NestLoop:
+        case T_MergeJoin:
+        case T_HashJoin:
+            /* these are the supported path types */
+            break;
+        case T_Material:
+        {
+            MaterialPath *mpath;
+            mpath = (MaterialPath *) path;
+            return path_satisfies_joinorder(mpath->subpath, join_order, op_hint);
+        }
+        case T_Memoize:
+        {
+            MemoizePath *mpath;
+            mpath = (MemoizePath *) path;
+            return path_satisfies_joinorder(mpath->subpath, join_order, op_hint);
+        }
+        case T_Gather:
+        {
+            GatherPath *gpath;
+            gpath = (GatherPath *) path;
+            return path_satisfies_joinorder(gpath->subpath, join_order, op_hint);
+        }
+        case T_GatherMerge:
+        {
+            GatherMergePath *gmpath;
+            gmpath = (GatherMergePath *) path;
+            return path_satisfies_joinorder(gmpath->subpath, join_order, op_hint);
+        }
+        case T_Unique:
+        {
+            UniquePath *upath;
+            upath = (UniquePath *) path;
+            return path_satisfies_joinorder(upath->subpath, join_order, op_hint);
+        }
+        case T_ProjectSet:
+        {
+            ProjectSetPath *ppath;
+            ppath = (ProjectSetPath *) path;
+            return path_satisfies_joinorder(ppath->subpath, join_order, op_hint);
+        }
+        case T_Sort:
+        {
+            SortPath *spath;
+            spath = (SortPath *) path;
+            return path_satisfies_joinorder(spath->subpath, join_order, op_hint);
+        }
+        case T_IncrementalSort:
+        {
+            IncrementalSortPath *ispath;
+            ispath = (IncrementalSortPath *) path;
+            return path_satisfies_joinorder(ispath->spath.subpath, join_order, op_hint);
+        }
+        case T_Group:
+        {
+            GroupPath *gpath;
+            gpath = (GroupPath *) path;
+            return path_satisfies_joinorder(gpath->subpath, join_order, op_hint);
+        }
+        case T_Agg:
+        {
+            AggPath *apath;
+            apath = (AggPath *) path;
+            return path_satisfies_joinorder(apath->subpath, join_order, op_hint);
+        }
+        case T_GroupingSet:
+        {
+            GroupingSetsPath *gspath;
+            gspath = (GroupingSetsPath *) path;
+            return path_satisfies_joinorder(gspath->subpath, join_order, op_hint);
+        }
+        case T_WindowAgg:
+        {
+            WindowAggPath *wpath;
+            wpath = (WindowAggPath *) path;
+            return path_satisfies_joinorder(wpath->subpath, join_order, op_hint);
+        }
+        case T_SetOp:
+        {
+            SetOpPath *spath;
+            spath = (SetOpPath *) path;
+            return path_satisfies_joinorder(spath->subpath, join_order, op_hint);
+        }
+        case T_Limit:
+        {
+            LimitPath *lpath;
+            lpath = (LimitPath *) path;
+            return path_satisfies_joinorder(lpath->subpath, join_order, op_hint);
+        }
+        default:
+            ereport(ERROR,
+                    errmsg("In path_satisfies_joinorder: Unsupported path type."),
+                    errdetail("Path: %s", pathtype_to_string(path)),
+                    errhint("This is a programming error. Please report at https://github.com/rbergm/pg_lab/issues."));
+            break;
+    }
 
     relids = PathRelids(path);
     current_node = traverse_join_order(join_order, relids);
@@ -306,9 +597,9 @@ path_satisfies_joinorder(Path *path, JoinOrder *join_order, OperatorHint **op_hi
 
 /*
  * Checks, whether the given path is compatible with the operator hints.
- * 
+ *
  * This actually includes two different checks:
- * 
+ *
  * 1. that the path itself has a allowed operator
  * 2. for joins, that the inner input uses materialization/memoization correctly
  */
@@ -334,11 +625,118 @@ path_satisfies_operators(PlannerHints *hints, Path *path, OperatorHint *op_hint)
     }
 
     /*
+     * Especially for the final path check in final_path_callback() we might encouter an upper-rel path.
+     * For such a path, we recurse into the child path until we encouter a scan/join path to check.
+     */
+    switch (path->pathtype)
+    {
+        case T_SeqScan:
+        case T_IndexScan:
+        case T_IndexOnlyScan:
+        case T_BitmapHeapScan:
+        case T_NestLoop:
+        case T_MergeJoin:
+        case T_HashJoin:
+            /* these are the supported path types */
+            break;
+        case T_Material:
+        {
+            MaterialPath *mpath;
+            mpath = (MaterialPath *) path;
+            return path_satisfies_operators(hints, mpath->subpath, op_hint);
+        }
+        case T_Memoize:
+        {
+            MemoizePath *mpath;
+            mpath = (MemoizePath *) path;
+            return path_satisfies_operators(hints, mpath->subpath, op_hint);
+        }
+        case T_Gather:
+        {
+            GatherPath *gpath;
+            gpath = (GatherPath *) path;
+            return path_satisfies_operators(hints, gpath->subpath, op_hint);
+        }
+        case T_GatherMerge:
+        {
+            GatherMergePath *gmpath;
+            gmpath = (GatherMergePath *) path;
+            return path_satisfies_operators(hints, gmpath->subpath, op_hint);
+        }
+        case T_Unique:
+        {
+            UniquePath *upath;
+            upath = (UniquePath *) path;
+            return path_satisfies_operators(hints, upath->subpath, op_hint);
+        }
+        case T_ProjectSet:
+        {
+            ProjectSetPath *ppath;
+            ppath = (ProjectSetPath *) path;
+            return path_satisfies_operators(hints, ppath->subpath, op_hint);
+        }
+        case T_Sort:
+        {
+            SortPath *spath;
+            spath = (SortPath *) path;
+            return path_satisfies_operators(hints, spath->subpath, op_hint);
+        }
+        case T_IncrementalSort:
+        {
+            IncrementalSortPath *ispath;
+            ispath = (IncrementalSortPath *) path;
+            return path_satisfies_operators(hints, ispath->spath.subpath, op_hint);
+        }
+        case T_Group:
+        {
+            GroupPath *gpath;
+            gpath = (GroupPath *) path;
+            return path_satisfies_operators(hints, gpath->subpath, op_hint);
+        }
+        case T_Agg:
+        {
+            AggPath *apath;
+            apath = (AggPath *) path;
+            return path_satisfies_operators(hints, apath->subpath, op_hint);
+        }
+        case T_GroupingSet:
+        {
+            GroupingSetsPath *gspath;
+            gspath = (GroupingSetsPath *) path;
+            return path_satisfies_operators(hints, gspath->subpath, op_hint);
+        }
+        case T_WindowAgg:
+        {
+            WindowAggPath *wpath;
+            wpath = (WindowAggPath *) path;
+            return path_satisfies_operators(hints, wpath->subpath, op_hint);
+        }
+        case T_SetOp:
+        {
+            SetOpPath *spath;
+            spath = (SetOpPath *) path;
+            return path_satisfies_operators(hints, spath->subpath, op_hint);
+        }
+        case T_Limit:
+        {
+            LimitPath *lpath;
+            lpath = (LimitPath *) path;
+            return path_satisfies_operators(hints, lpath->subpath, op_hint);
+        }
+        default:
+            ereport(ERROR,
+                    errmsg("In path_satisfies_operators: Unsupported path type."),
+                    errdetail("Path: %s", pathtype_to_string(path)),
+                    errhint("This is a programming error. Please report at https://github.com/rbergm/pg_lab/issues."));
+            break;
+    }
+
+    /*
      * Now that we have the sanity checks out of the way, we need to check two things:
-     * 
+     *
      * 1. whether the path itself has the correct operator
      * 2. for joins, whether the inner child makes correct use of materialize/memoize operations
-     * 
+     *
      * We perform both checks in sequence. However, this means that we cannot stop if we do not
      * find a hint for the path's root - it might still be that we have a join with hints on the
      * input nodes. Even, if the join itself is not hinted.
@@ -357,10 +755,10 @@ path_satisfies_operators(PlannerHints *hints, Path *path, OperatorHint *op_hint)
         /* See above comment on why we need to guard this */
         PhysicalOperator requested_op;
         requested_op = op_hint->op;
-        
-        if (requested_op == OP_SEQSCAN && !PathIsA(path, NestLoop))
+
+        if (requested_op == OP_SEQSCAN && !PathIsA(path, SeqScan))
             return false;
-        else if (requested_op == OP_IDXSCAN && (!PathIsA(path, IndexScan) || !PathIsA(path, IndexOnlyScan)))
+        else if (requested_op == OP_IDXSCAN && !(PathIsA(path, IndexScan) || PathIsA(path, IndexOnlyScan)))
             return false;
         else if (requested_op == OP_BITMAPSCAN && !PathIsA(path, BitmapHeapScan))
             return false;
@@ -377,24 +775,24 @@ path_satisfies_operators(PlannerHints *hints, Path *path, OperatorHint *op_hint)
     /*
      * For scans we are done at this point. But for joins, we still need to make sure that the inner input uses
      * materialize/memoize correctly.
-     * 
+     *
      * These checks are a bit complicated, so let's discuss them first:
-     * 
+     *
      * The primary complicating matter is that we allow different hinting modes.
      * In _anchored_ mode, the optimizer is free to insert additional memoize/materialize nodes as it sees fit.
      * But if we have a memoize/materialize hint, we still must use the corresponding operator.
      * In _full_ mode, we must adhere precisely to the given hints. If we do not have a materialize/memoize hint,
      * we cannot use it.
      * Our control logic needs to handle both cases adequately.
-     * 
+     *
      * The second complicating matter is that Postgres uses two different ways to express materialization.
      * The straightforward way is via explicit Material operators. But in additiona, materialization for merge
      * joins is expressed via the special materialize_inner flag on the join itself.
      * Again, our control logic needs to handle both.
-     * 
+     *
      * In the end, we basically implement the following truth tables:
      * (colums are the actual operators in the path, rows are the operators requested by the hints)
-     * 
+     *
      * For _anchored_ mode
      * +=============+========+==========+========+
      * | Hint / Path |  Memo  | Material | Other  |
@@ -405,7 +803,7 @@ path_satisfies_operators(PlannerHints *hints, Path *path, OperatorHint *op_hint)
      * +-------------+--------+----------+--------+
      * | None        | accept | accept   | accept |
      * +-------------+--------+----------+--------+
-     * 
+     *
      * For _full_ mode
      * +=============+========+==========+========+
      * | Hint / Path |  Memo  | Material | Other  |
@@ -416,12 +814,12 @@ path_satisfies_operators(PlannerHints *hints, Path *path, OperatorHint *op_hint)
      * +-------------+--------+----------+--------+
      * | None        | reject | reject   | accept |
      * +-------------+--------+----------+--------+
-     * 
+     *
      */
     if (!IsAJoinPath(path))
         return true;
 
-    merge_path = PathIsA(path, MergePath) ? (MergePath *) path : NULL; /* for materialize_inner */
+    merge_path = PathIsA(path, MergeJoin) ? (MergePath *) path : NULL; /* for materialize_inner */
     jpath = (JoinPath *) path;
     inner_child = jpath->innerjoinpath;
 
@@ -460,10 +858,10 @@ path_satisfies_operators(PlannerHints *hints, Path *path, OperatorHint *op_hint)
 
 /*
  * Extracts the root node of the parallel portion of a path.
- * 
+ *
  * If the path is entirely sequential, NULL is returned. If a parallel portion is found
  * (i.e. the path contains a Gather or GatherMerge node), its immediate subpath is returned.
- * 
+ *
  * Notice that this function does not work on partial paths, they must already be gathered.
  */
 static Path*
@@ -493,7 +891,9 @@ find_parallel_subpath(Path *path)
             apath = (AppendPath *) path;
             if (apath->first_partial_path < list_length(apath->subpaths))
             {
-                ereport(ERROR, errmsg("In find_parallel_subpath: AppendPath with partial paths found"));
+                ereport(ERROR,
+                        errmsg("In find_parallel_subpath: AppendPath with partial paths found"),
+                        errhint("This is a programming error. Please report at https://github.com/rbergm/pg_lab/issues."));
             }
             foreach(lc, apath->subpaths)
             {
@@ -626,12 +1026,12 @@ find_parallel_subpath(Path *path)
 
 /*
  * Checks, if a path from the *pathlist* is compatible with the parallelization hints.
- * 
+ *
  * NB: This function really only works for paths from the pathlist, i.e. those paths that are
  * either fully sequential, or paths that have already been gathered. Calling this function
  * on partial paths will lead to incorrect results.
- * 
- * 
+ *
+ *
  */
 static bool
 path_satisfies_parallelization(PlannerHints *hints, Path *path)
@@ -701,22 +1101,22 @@ partial_path_satisfies_parallelization(PlannerHints *hints, Path *path)
 /*
  * Checks, whether the given path is on any of the join prefixes
  * (i.e. the path's join order is equal or part of one of the prefixes).
- * 
+ *
  * Notice that this check suceeds in two cases:
- * 
+ *
  * 1. by default, if one of the join prefixes is found on the path's join order.
  * 2. the path uses a different set of relations than the all of the prefixes
- * 
+ *
  * In the second case, the current path describes a portion of the query plan
  * that is not restricted by the join prefixes.
- * 
+ *
  * For example, consider a query
- * 
+ *
  * SELECT * FROM R, S, T, U
  * WHERE  R.a = S.b AND R.a = T.c AND R.a = U.d
  *  AND S.b = T.c AND S.b = U.d
  *  AND T.c = U.d;
- * 
+ *
  * with join prefix (R S) - i.e. R should first be joined with S.
  * Now, any path that joins T and U will still be accepted, even though they are not
  * on the join prefix.
@@ -771,7 +1171,7 @@ path_satisfies_joinprefixes(Path *path, List *prefixes)
              */
             Assert(cmp == JO_DISJOINT);
         }
-        #endif   
+        #endif
     }
 
     return matching_prefix || all_disjunct;
@@ -792,20 +1192,20 @@ check_path_recursive(PlannerHints *hints, Path *path, bool is_partial)
 
     if (!path_satisfies_joinprefixes(path, hints->join_prefixes))
     {
-        pglab_trace("Rejecting path %s - does not satisfy join prefixes", path_to_string(path));
+        pglab_trace("Check failed for path %s - does not satisfy join prefixes", path_to_string(path));
         return false;
     }
-    
+
     op_hint = NULL;
     if (!path_satisfies_joinorder(path, hints->join_order_hint, &op_hint))
     {
-        pglab_trace("Rejecting path %s - does not satisfy join order", path_to_string(path));
+        pglab_trace("Check failed for path %s - does not satisfy join order", path_to_string(path));
         return false;
     }
 
     if (!path_satisfies_operators(hints, path, op_hint))
     {
-        pglab_trace("Rejecting path %s - does not satisfy operator hints", path_to_string(path));
+        pglab_trace("Check failed for path %s - does not satisfy operator hints", path_to_string(path));
         return false;
     }
 
@@ -813,7 +1213,7 @@ check_path_recursive(PlannerHints *hints, Path *path, bool is_partial)
     {
         if (!partial_path_satisfies_parallelization(hints, path))
         {
-            pglab_trace("Rejecting (partial) path %s - does not satisfy parallelization hints", path_to_string(path));
+            pglab_trace("Check failed for path %s - does not satisfy parallelization hints", path_to_string(path));
             return false;
         }
     }
@@ -821,7 +1221,7 @@ check_path_recursive(PlannerHints *hints, Path *path, bool is_partial)
     {
         if (!path_satisfies_parallelization(hints, path))
         {
-            pglab_trace("Rejecting path %s - does not satisfy parallelization hints", path_to_string(path));
+            pglab_trace("Check failed for path %s - does not satisfy parallelization hints", path_to_string(path));
             return false;
         }
     }
@@ -881,7 +1281,7 @@ check_path_recursive(PlannerHints *hints, Path *path, bool is_partial)
             jpath = (JoinPath *) path;
             if (!check_path_recursive(hints, jpath->outerjoinpath, is_partial))
                 return false;
-            
+
             /*
              * For parallel plans, the PG optimizer uses a partial path as the outer path but
              * selects the inner path from the plain pathlist. Naively, one would assume that
@@ -972,17 +1372,19 @@ check_path_recursive(PlannerHints *hints, Path *path, bool is_partial)
         {
             GatherPath *gpath;
             gpath = (GatherPath *) path;
-            return check_path_recursive(hints, gpath->subpath, is_partial);
+            return check_path_recursive(hints, gpath->subpath, true);
         }
         case T_GatherMerge:
         {
             GatherMergePath *gmpath;
             gmpath = (GatherMergePath *) path;
-            return check_path_recursive(hints, gmpath->subpath, is_partial);
+            return check_path_recursive(hints, gmpath->subpath, true);
         }
         default:
-            ereport(ERROR, errmsg("Unsupported path type %s in check_path_recursive",
-                                  pathtype_to_string(path)));
+            ereport(ERROR,
+                    errmsg("In check_path: Unsupported path type."),
+                    errdetail("Path: %s", path_to_string(path)),
+                    errhint("This is a programming error. Please report at https://github.com/rbergm/pg_lab/issues."));
             return false;
     }
 }
@@ -1093,7 +1495,10 @@ hint_aware_final_path_callback(PlannerInfo *root, RelOptInfo *rel, Path *best_pa
     {
         if (pglab_check_final_path &&
             !check_path_recursive(current_hints, best_path, false))
-            ereport(ERROR, errmsg("pg_lab could not find a vcouldalid path that satisfies all hints"));
+            ereport(ERROR,
+                    errmsg("pg_lab could not find a valid path that satisfies all hints."),
+                    errdetail("Final path was %s", path_to_string(best_path)),
+                    errhint("If you are certain that the hinted query should be valid, please open an issue at https://github.com/rbergm/pg_lab/issues."));
     }
 
     if (prev_final_path_callback)
@@ -1159,38 +1564,12 @@ hint_aware_add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost, Li
 static void
 evict_path(Path *path, bool is_partial)
 {
-    OperatorHint *op_hint;
-    bool hint_found;
-    if (!PathIsA(path, IndexPath))
+    if (PathIsA(path, IndexScan) || PathIsA(path, IndexOnlyScan))
     {
-        pfree(path);
         return;
     }
 
-    /*
-     * Index paths make our lives hard: even if they do not satisfy our hints, they
-     * might still be required. This is because constructing a bitmap path relies on
-     * the index paths.
-     * Therefore, if we hint to use a bitmap path, we cannot evict the index path beforehand.
-     */
-
-    op_hint = (OperatorHint *) hash_search(current_hints->operator_hints, &path->parent->relids,
-                                           HASH_FIND, &hint_found);
-    if (!hint_found || op_hint->op != OP_BITMAPSCAN)
-    {
-        pfree(path);
-        return;
-    }
-
-    if (is_partial)
-    {
-        PG_ADD_PARTIAL_PATH(path->parent, path);
-    }
-    else
-    {
-        PG_ADD_PATH(path->parent, path);
-    }
-
+    pfree(path);
 }
 
 
@@ -1201,8 +1580,15 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *path)
 
     CHECK_FOR_INTERRUPTS();
 
-    if (parent_rel->pathlist == NIL || !IS_HINTED())
+    if (!current_hints || !current_hints->contains_hint)
     {
+        PG_ADD_PATH(parent_rel, path);
+        return;
+    }
+
+    if (parent_rel->pathlist == NIL)
+    {
+        pglab_trace("Accepting placeholder path %s", path_to_string(path));
         PG_ADD_PATH(parent_rel, path);
         return;
     }
@@ -1213,7 +1599,7 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *path)
         evict_path(path, false);
         return;
     }
-    
+
     op_hint = NULL;
     if (!path_satisfies_joinorder(path, current_hints->join_order_hint, &op_hint))
     {
@@ -1236,17 +1622,17 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *path)
         return;
     }
 
-    /* 
+    /*
      * At this point we will definitely accept the new path. The only remaining question
      * is whether we need to evict one of the existing paths.
      * This happens, if we previously accepted a path not because it satisfied the hints, but because
      * it was the only known path for the relation so far (remember that set_cheapest() errors for empty
      * pathlists and we therefore always need at least one path).
-     * 
+     *
      * This situation may only occur, if there is exactly one path in the pathlist - if there are multiple
      * paths, these had to pass through hint_aware_add_path() already and survived all checks, including
      * this eviction logic.
-     * 
+     *
      * We basically check, if the existing path satisfies all hints. If it does not, we evict it.
      */
 
@@ -1256,11 +1642,13 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *path)
         placeholder = (Path *) linitial(parent_rel->pathlist);
         if (!check_path_recursive(current_hints, placeholder, false))
         {
+            pglab_trace("Evicting placeholder path %s", path_to_string(placeholder));
             parent_rel->pathlist = list_delete_first(parent_rel->pathlist);
             evict_path(placeholder, false);
         }
     }
 
+    pglab_trace("Accepting path %s", path_to_string(path));
     PG_ADD_PATH(parent_rel, path);
 }
 
@@ -1270,8 +1658,7 @@ hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *path)
     OperatorHint *op_hint;
 
     CHECK_FOR_INTERRUPTS();
-
-    if (parent_rel->pathlist == NIL || !IS_HINTED())
+    if (!current_hints || !current_hints->contains_hint)
     {
         PG_ADD_PARTIAL_PATH(parent_rel, path);
         return;
@@ -1279,33 +1666,34 @@ hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *path)
 
     if (!path_satisfies_joinprefixes(path, current_hints->join_prefixes))
     {
-        pglab_trace("Rejecting path %s - does not satisfy join prefixes", path_to_string(path));
+        pglab_trace("Rejecting partial path %s - does not satisfy join prefixes", path_to_string(path));
         evict_path(path, true);
         return;
     }
-    
+
     op_hint = NULL;
     if (!path_satisfies_joinorder(path, current_hints->join_order_hint, &op_hint))
     {
-        pglab_trace("Rejecting path %s - does not satisfy join order", path_to_string(path));
+        pglab_trace("Rejecting partial path %s - does not satisfy join order", path_to_string(path));
         evict_path(path, true);
         return;
     }
 
     if (!path_satisfies_operators(current_hints, path, op_hint))
     {
-        pglab_trace("Rejecting path %s - does not satisfy operator hints", path_to_string(path));
+        pglab_trace("Rejecting partial path %s - does not satisfy operator hints", path_to_string(path));
         evict_path(path, true);
         return;
     }
 
     if (!partial_path_satisfies_parallelization(current_hints, path))
     {
-        pglab_trace("Rejecting (partial) path %s - does not satisfy parallelization hints", path_to_string(path));
+        pglab_trace("Rejecting partial path %s - does not satisfy parallelization hints", path_to_string(path));
         evict_path(path, true);
         return;
     }
 
+    pglab_trace("Accepting partial path %s", path_to_string(path));
     PG_ADD_PARTIAL_PATH(parent_rel, path);
 }
 

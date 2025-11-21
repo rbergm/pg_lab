@@ -179,8 +179,12 @@ class TestFullPlanHinting(unittest.TestCase):
             native_plan = _explain_plan(query, cur)
             hints = _extract_hint_set(native_plan, plan_mode="full")
             hinted_query = f"{hints}\n{query}"
-            print(hinted_query)
-            hinted_plan = _explain_plan(hinted_query, cur)
+
+            try:
+                hinted_plan = _explain_plan(hinted_query, cur)
+            except psycopg.errors.InternalError as e:
+                self.fail(f"Query {label}\n\n{hinted_query}\nFailed with error: {e}")
+
             self.assertPlansEqual(
                 native_plan,
                 hinted_plan,
