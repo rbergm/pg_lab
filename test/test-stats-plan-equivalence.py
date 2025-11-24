@@ -91,11 +91,11 @@ def _determine_join_order(plan: dict) -> str:
             raise ValueError(f"Unexpected plan structure: {plan}")
 
 
-def _determine_operators(plan: dict) -> list[str]:
+def _determine_operators(plan: dict, *, parallel_workers: int = 0) -> list[str]:
     hints: list[str] = []
-
     intermediate = " ".join(plan["Intermediates"])
 
+    parallel_subplan = False
     match plan["Node Type"]:
         case "Hash Join":
             operator = "HashJoin"
@@ -121,17 +121,28 @@ def _determine_operators(plan: dict) -> list[str]:
             | "Sort"
             | "Limit"
             | "Bitmap Index Scan"
-            | "Gather"
-            | "Gather Merge"
         ):
             operator = None
+        case "Gather" | "Gather Merge":
+            operator = None
+            parallel_subplan = True
+            parallel_workers = plan.get("Workers Planned", 0)
         case _:
             raise ValueError(f"Unexpected plan node type: {plan['Node Type']}")
 
-    if operator is not None:
+    if operator is not None and parallel_workers:
+        hints.append(f"{operator}({intermediate} (workers={parallel_workers}))")
+    elif operator is not None:
         hints.append(f"{operator}({intermediate})")
+    elif parallel_workers and not parallel_subplan:
+        hints.append(f"Result(workers={parallel_workers})")
+        parallel_subplan = False
+
+    if not parallel_subplan:
+        # reset parallel workers for child plans
+        parallel_workers = 0
     for child in plan.get("Plans", []):
-        hints.extend(_determine_operators(child))
+        hints.extend(_determine_operators(child, parallel_workers=parallel_workers))
 
     return hints
 
@@ -189,7 +200,7 @@ class TestFullPlanHinting(unittest.TestCase):
             self.assertPlansEqual(
                 native_plan,
                 hinted_plan,
-                msg=f"Plans differ for query {label} ({query}) with hints: {hints}",
+                msg=f"Plans differ for query {label}\n\n{hinted_query}",
             )
 
 
