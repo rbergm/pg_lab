@@ -18,7 +18,8 @@ if os.getenv("TEST_QUERIES"):
 
 def _load_workload() -> dict[str, str]:
     workload_dir = Path(__file__).parent / "stats" / "queries"
-    return {q.name: q.read_text() for q in workload_dir.resolve().glob("*.sql")}
+    sql_files = workload_dir.resolve().glob("*.sql")
+    return {q.name: q.read_text() for q in sorted(sql_files)}
 
 
 def _check_existing_db() -> bool:
