@@ -611,7 +611,7 @@ path_satisfies_operators(PlannerHints *hints, Path *path, OperatorHint *op_hint)
     bool             memo_allowed, material_allowed;
     bool             memo_used, material_used;
 
-    if (path->parent->reloptkind == RELOPT_UPPER_REL || path->parent->reloptkind == RELOPT_OTHER_UPPER_REL)
+    if (IS_UPPER_REL(path->parent) || !hints->operator_hints)
     {
         /*
          * We currently only support hints for joins and scans. Everything else needs to be auto-accepted.
@@ -632,7 +632,7 @@ path_satisfies_operators(PlannerHints *hints, Path *path, OperatorHint *op_hint)
         case T_NestLoop:
         case T_MergeJoin:
         case T_HashJoin:
-            /* these are the supported path types */
+            /* These are the supported path types. We check them below. */
             break;
         case T_Material:
         {
