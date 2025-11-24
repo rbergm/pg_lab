@@ -24,11 +24,6 @@ extern "C" {
 
 #include "hints.h"
 
-/* TODO
- * Should plan_mode=full also affect parallelization?
- * I.e. if no parallel workers have been requested --> only produce sequential plans?
- */
-
 char* JOIN_ORDER_TYPE_FORCED  = (char*) "Forced";
 
 #if PG_VERSION_NUM < 170000
@@ -1030,40 +1025,140 @@ find_parallel_subpath(Path *path)
  * NB: This function really only works for paths from the pathlist, i.e. those paths that are
  * either fully sequential, or paths that have already been gathered. Calling this function
  * on partial paths will lead to incorrect results.
- *
- *
  */
 static bool
 path_satisfies_parallelization(PlannerHints *hints, Path *path)
 {
-    Path *par_subpath;
+    Path            *par_subpath;
+    JoinOrder       *parallel_root;
+    BMS_Comparison   bms_comp;
+
     if (hints->parallel_mode == PARMODE_DEFAULT)
     {
-        /* no restrictions on parallelization */
+        /* No restrictions on parallelization */
         return true;
     }
 
     par_subpath = find_parallel_subpath(path);
-    switch (hints->parallel_mode)
+    if (hints->parallel_mode == PARMODE_SEQUENTIAL)
     {
-        case PARMODE_SEQUENTIAL:
-            return par_subpath == NULL;
-        case PARMODE_PARALLEL:
-            if (par_subpath == NULL)
-                return false;
-        default:
-            /*
-             * Logic error - thanks to the above check for PARMODE_DEFAULT,
-             * this switch-case should be exhaustive.
-             */
-            Assert(false);
+        /* We should only produce sequential paths. This is easy to enforce.*/
+        return par_subpath == NULL;
     }
 
-    if (hints->parallelize_entire_plan)
-        return IS_UPPER_REL(path->parent);
-    else
+    /*
+     * At this point we know that we should indeed produce a parallel path.
+     * This leaves us with two cases:
+     *
+     * 1. Either the path contains a parallel portion (par_subpath != NULL). In this case, we need to make sure that the
+     *    correct part of the path is parallelized.
+     * 2. Or, the path is fully sequential (par_subpath == NULL). Even in this case, we still cannot immediately reject the
+     *    path. The reason is that the planner might still use this path as the inner relation of a parallel join. Therefore,
+     *    we need to check whether this path can actually become such an inner relation.
+     */
+    Assert(hints->parallel_mode == PARMODE_PARALLEL);
+
+    if (par_subpath)
+    {
+        /* Case 1: make sure that we did parallelize the correct subpath */
+
+        if (hints->parallelize_entire_plan)
+        {
+            return IS_UPPER_REL(par_subpath->parent);
+        }
+        else
+        {
+            Assert(hints->parallel_rels != NULL);
+            return !IS_UPPER_REL(par_subpath->parent)  /* this proofs that parent->relids != NULL */
+                && bms_equal(par_subpath->parent->relids, hints->parallel_rels);
+        }
+    }
+
+    /*
+     * We are in case 2: either our path could still be usefull as an inner relation of a parallel join,
+     * or we have to reject it (since parallel_mode == PARALLEL)
+     */
+    if (hints->parallelize_entire_plan || hints->parallel_rels == NULL)
+    {
+        /*
+         * For parallelize_entire_plan, we need to parallelize all joins, so make sure that this is not the last join.
+         *
+         * The same reasoning applies if parallel_rels == NULL: this indicates that we can parallelize any portion of the plan.
+         * Therefore, we just need to make sure that there is still a chance that we can parallelize later on
+         * (i.e. in a subsequent join, which in turn implies that this is not allowed to be the final join).
+         *
+         * NB: we cannot use bms_is_subset here because this check would pass for parent->relids == all_baserels
+         *     as well.
+         */
         return !IS_UPPER_REL(path->parent)
-            &&  bms_equal(par_subpath->parent->relids, hints->parallel_rels);
+            && !bms_equal(path->parent->relids, current_planner_root->all_baserels);
+    }
+
+    /*
+     * This is the final case: we should compute a specific intermediate in parallel. So make sure that our current path can
+     * become an inner relation of the parallel join of the intermediate.
+     */
+    Assert(hints->parallel_rels != NULL);
+    if (IS_UPPER_REL(path->parent))
+    {
+        /* We are already at an upper rel. There is no way to introduce parallelization at this point. Reject. */
+        return false;
+    }
+
+    /* From this point onwards we can directly access parent->relids since we just proofed that we are not in an upper rel. */
+    bms_comp = bms_subset_compare(path->parent->relids, hints->parallel_rels);
+    if (bms_comp == BMS_EQUAL || bms_comp == BMS_SUBSET2)
+    {
+        /* Our path is too far up in the plan. We should have already parallelized. Reject. */
+        return false;
+    }
+    else if (bms_comp == BMS_DIFFERENT)
+    {
+        /* This path does not belong to the parallel join at all. We can keep it. */
+        return true;
+    }
+
+    /*
+     * Now we did also proof that our path computes a relation that will become part of the parallel join.
+     * But can it become the inner relation? We can only really answer this question if we know the final join order.
+     * Otherwise, later add_path() calls need to evict the bad paths again.
+     */
+    if (!hints->join_order_hint)
+        return true;
+
+    parallel_root = traverse_join_order(hints->join_order_hint, hints->parallel_rels);
+    while (parallel_root)
+    {
+        if (parallel_root->node_type == BASE_REL)
+        {
+            /* We reached a base rel without finding the inner child. Reject. */
+            return false;
+        }
+        else if (bms_is_subset(path->parent->relids, parallel_root->inner_child->relids))
+        {
+            /* Bingo! Our path is on its way to become an inner child! */
+            return true;
+        }
+        else if (bms_is_subset(path->parent->relids, parallel_root->outer_child->relids))
+        {
+            /* The path could still become an inner relation further down in the plan. Keep checking. */
+            parallel_root = parallel_root->outer_child;
+        }
+        else
+        {
+            /*
+             * Some of the relations from our path belong to the outer child while others belong to the inner one.
+             * This will be rejected by the join order check anyhow, but we can also reject the path here since it cannot
+             * be part of an inner relation anymore.
+             */
+            return false;
+        }
+    }
+
+    ereport(ERROR,
+            errmsg("In path_satisfies_parallelization: join order traversal failed unexpectedly."),
+            errhint("This is a programming error. Please report at https://github.com/rbergm/pg_lab/issues."));
+    return false;
 }
 
 /*
@@ -1579,7 +1674,6 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *path)
     OperatorHint *op_hint;
 
     CHECK_FOR_INTERRUPTS();
-
     if (!current_hints || !current_hints->contains_hint)
     {
         PG_ADD_PATH(parent_rel, path);
