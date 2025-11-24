@@ -43,7 +43,7 @@ show_help() {
     echo -e "--debug\t\t\t\tProduce a debug build of the Postgres server"
     echo -e "--stop\t\t\t\tStop the Postgres server process after installation and setup finished"
     echo -e "--uuid-lib <library>\t\tSpecify the UUID library to use or 'none' to disable UUID support (default: none).${NEWLINE}Currently supported libraries are 'ossp' and 'e2fs'."
-    echo -e "--llvm-jit <on|off|auto>\tEnable or disable LLVM-based JIT compilation (default: on only if LLVM is available)."
+    echo -e "--llvm-jit <enabled|disabled|auto>\tEnable or disable LLVM-based JIT compilation (default: auto - use LLVM if it is available)."
     exit $RET
 }
 
