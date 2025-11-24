@@ -11,7 +11,8 @@ Since we are not ready for the 1.0 release yet, this does not matter right now.
 # ➡ Version 0.4.3 _(current)_
 
 ## 🐣 New features
-- _None_
+- Setting *plan_mode=full* now forces sequential sequential if the other hints do not explicitly request parallel plans.
+  This is in line with how the absence of memoize/materialize hints are already handled.
 
 ## 💀 Breaking changes
 - _None_

@@ -321,6 +321,9 @@ parse_hint_block(PlannerInfo *root, PlannerHints *hints)
     HintBlockListener listener(root, hints);
     antlr4::tree::ParseTreeWalker::DEFAULT.walk(&listener, tree);
     listener.ExportGucCleanup();
+
+    if (hints->mode == HINTMODE_FULL && hints->parallel_mode == PARMODE_DEFAULT)
+        hints->parallel_mode = PARMODE_SEQUENTIAL;
 }
 
 }
