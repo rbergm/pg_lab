@@ -155,6 +155,7 @@ if [ "$DEBUG_BUILD" = "true" ] ; then
     meson setup build --prefix=$PG_TARGET_DIR \
         --buildtype=debug \
         --reconfigure \
+        -Dcassert=true \
         -Dplpython=auto \
         -Dicu=enabled \
         -Dllvm="$LLVM_OPTS" \
@@ -166,6 +167,7 @@ else
     meson setup build --prefix=$PG_TARGET_DIR \
         --buildtype=release \
         --reconfigure \
+        -Dcassert=false \
         -Dplpython=auto \
         -Dicu=enabled \
         -Dllvm="$LLVM_OPTS" \

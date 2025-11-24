@@ -17,10 +17,11 @@ Since we are not ready for the 1.0 release yet, this does not matter right now.
 - _None_
 
 ## 📰 Updates
+- Debug builds now automatically enable assert-checking.
 - Reworked the internal hinting logic once again. This should fix some edge cases when hinting parallel plans or intermediate
   operators like materialization/memoization. The new approach seems to be much more robust and easier to maintain.
   Hopefully this pave the way for future features as well.
-- Introduced basic regression tests for the hinting logic. This should help to avoid future breakages.
+- Introduced basic regression tests for the hinting logic. This should help to avoid future breakages. Maybe..
 
 ## 🏥 Fixes
 - Fixed segfault when using *plan_mode=full*
