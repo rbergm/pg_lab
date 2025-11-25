@@ -238,6 +238,41 @@ pathtype_to_string(Path *path)
         return "Sort";
     else if (PathIsA(path, Limit))
         return "Limit";
+    else if (PathIsA(path, Result))
+    {
+        switch (path->type)
+        {
+            case T_ProjectionPath:
+                return "Projection";
+            case T_MinMaxAggPath:
+                return "MinMaxAgg";
+            case T_GroupResultPath:
+                return "GroupResult";
+            case T_Path:
+                return "ResultScan";
+            default:
+                return "<Unknown Result Type>";
+
+        }
+    }
+    else if (PathIsA(path, Append))
+        return "Append";
+    else if (PathIsA(path, MergeAppend))
+        return "MergeAppend";
+    else if (PathIsA(path, Unique))
+        return "Unique";
+    else if (PathIsA(path, ProjectSet))
+        return "ProjectSet";
+    else if (PathIsA(path, IncrementalSort))
+        return "IncrementalSort";
+    else if (PathIsA(path, Group))
+        return "Group";
+    else if (PathIsA(path, GroupingSet))
+        return "GroupingSets";
+    else if (PathIsA(path, WindowAgg))
+        return "WindowAgg";
+    else if (PathIsA(path, SetOp))
+        return "SetOp";
     else
         return "<Unknown>";
 }
@@ -422,6 +457,28 @@ path_to_string(Path *path)
             appendStringInfo(buf, "(%s)", path_to_string(gmpath->subpath));
             break;
         }
+        case T_Result:
+        {
+            switch (path->type)
+            {
+                case T_ProjectionPath:
+                {
+                    ProjectionPath *ppath;
+                    ppath = (ProjectionPath *) path;
+                    appendStringInfo(buf, "(%s)", path_to_string(ppath->subpath));
+                    break;
+                }
+                case T_MinMaxAggPath:
+                case T_GroupResultPath:
+                case T_Path:  /* this is a ResultScan */
+                    /* these paths have no further children */
+                    break;
+                default:
+                    elog(WARNING, "pg_lab: path_to_string: unsupported Result path type %d", path->type);
+                    break;
+            }
+            break;
+        }
         default:
             elog(WARNING, "pg_lab: path_to_string: unsupported path type %d", path->pathtype);
             break;
@@ -552,6 +609,29 @@ path_satisfies_joinorder(Path *path, JoinOrder *join_order, OperatorHint **op_hi
             LimitPath *lpath;
             lpath = (LimitPath *) path;
             return path_satisfies_joinorder(lpath->subpath, join_order, op_hint);
+        }
+        case T_Result:
+        {
+            /* Result paths are Postgres catch all paths with different concrete operators... */
+            switch (path->type)
+            {
+                case T_ProjectionPath:
+                {
+                    ProjectionPath *ppath;
+                    ppath = (ProjectionPath *) path;
+                    return path_satisfies_joinorder(ppath->subpath, join_order, op_hint);
+                }
+                case T_MinMaxAggPath:  /* min-max-agg derives the result directly from an index. This is essentially a scan. */
+                case T_GroupResultPath:
+                case T_Path:
+                    return true;
+                default:
+                    ereport(ERROR,
+                            errmsg("In path_satisfies_operators: Unsupported Result path type."),
+                            errdetail("Path: %s", pathtype_to_string(path)),
+                            errhint("This is a programming error. Please report at https://github.com/rbergm/pg_lab/issues."));
+            }
+
         }
         default:
             ereport(ERROR,
@@ -717,6 +797,28 @@ path_satisfies_operators(PlannerHints *hints, Path *path, OperatorHint *op_hint)
             LimitPath *lpath;
             lpath = (LimitPath *) path;
             return path_satisfies_operators(hints, lpath->subpath, op_hint);
+        }
+        case T_Result:
+        {
+            switch (path->type)
+            {
+                case T_ProjectionPath:
+                {
+                    ProjectionPath *ppath;
+                    ppath = (ProjectionPath *) path;
+                    return path_satisfies_operators(hints, ppath->subpath, op_hint);
+                }
+                case T_GroupResultPath:
+                case T_MinMaxAggPath:
+                case T_Path:
+                    return true;
+                default:
+                    ereport(ERROR,
+                            errmsg("In path_satisfies_operators: Unsupported Result path type."),
+                            errdetail("Path: %s", pathtype_to_string(path)),
+                            errhint("This is a programming error. Please report at https://github.com/rbergm/pg_lab/issues."));
+            }
+
         }
         default:
             ereport(ERROR,
@@ -999,6 +1101,28 @@ find_parallel_subpath(Path *path)
             lpath = (LimitPath *) path;
             return find_parallel_subpath(lpath->subpath);
         }
+        case T_Result:
+        {
+            switch (path->type)
+            {
+                case T_ProjectionPath:
+                {
+                    ProjectionPath *ppath;
+                    ppath = (ProjectionPath *) path;
+                    return find_parallel_subpath(ppath->subpath);
+                }
+                case T_MinMaxAggPath:
+                case T_GroupResultPath:
+                case T_Path:
+                    return NULL;
+                default:
+                    ereport(ERROR,
+                        errmsg("Unsupported Result path type %s in find_parallel_subpath", pathtype_to_string(path)),
+                        errhint("This is a programming error. Please report at https://github.com/rbergm/pg_lab/issues."));
+                    return NULL;
+            }
+            return NULL;
+        }
         case T_Gather:
         {
             GatherPath *gpath;
@@ -1012,8 +1136,9 @@ find_parallel_subpath(Path *path)
             return gmpath->subpath;
         }
         default:
-            ereport(ERROR, errmsg("Unsupported path type %s in find_parallel_subpath",
-                                  pathtype_to_string(path)));
+            ereport(ERROR,
+                errmsg("Unsupported path type %s in find_parallel_subpath", pathtype_to_string(path)),
+                errhint("This is a programming error. Please report at https://github.com/rbergm/pg_lab/issues."));
             return NULL;
     }
 
@@ -1474,6 +1599,27 @@ check_path_recursive(PlannerHints *hints, Path *path, bool is_partial)
             GatherMergePath *gmpath;
             gmpath = (GatherMergePath *) path;
             return check_path_recursive(hints, gmpath->subpath, true);
+        }
+        case T_Result:
+        {
+            switch (path->type)
+            {
+                case T_ProjectionPath:
+                {
+                    ProjectionPath *ppath;
+                    ppath = (ProjectionPath *) path;
+                    return check_path_recursive(hints, ppath->subpath, is_partial);
+                }
+                case T_GroupResultPath:
+                case T_MinMaxAggPath:
+                case T_Path:
+                    return true;
+                default:
+                    ereport(ERROR,
+                            errmsg("In check_path: Unsupported Result path type."),
+                            errdetail("Path: %s", path_to_string(path)),
+                            errhint("This is a programming error. Please report at https://github.com/rbergm/pg_lab/issues."));
+            }
         }
         default:
             ereport(ERROR,
