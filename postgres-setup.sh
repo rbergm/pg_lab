@@ -151,6 +151,7 @@ if [ -f GNUmakefile ] ; then
     make distclean
 fi
 
+echo ".. Running meson configuration"
 if [ "$DEBUG_BUILD" = "true" ] ; then
     meson setup build --prefix=$PG_TARGET_DIR \
         --buildtype=debug \
@@ -176,6 +177,8 @@ else
         -Dssl=openssl \
         -Duuid="$UUID_LIBRARY"
 fi
+
+echo ".. Starting Ninja build"
 cd $PG_SRC_DIR/build
 ninja clean && ninja all && ninja install
 export PATH="$PG_TARGET_DIR/bin:$PATH"
