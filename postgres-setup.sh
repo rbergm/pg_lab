@@ -136,6 +136,12 @@ if [ -n "$BASH_VERSION" -a "$BASH_SOURCE" != "$0" ] || [ -n "$ZSH_VERSION" -a "$
     fi
 fi
 
+if [ "$(echo -e "$(meson --version)\n1.10.1" | sort -V | head -n1)" != "1.10.1" ] ; then
+    echo "You are running an older version of meson ($(meson --version))."
+    echo "If you encouter issues while running the meson configuration, please consider updating to a more recent version."
+    echo "Specifically, we encoutered issues with meson versions older than 1.10.1."
+fi
+
 if [ "$FORCE_TARGET_DIR" = "false" ] ; then
     PG_TARGET_DIR="$PG_TARGET_DIR/pg-$PG_VER_PRETTY"
 fi
