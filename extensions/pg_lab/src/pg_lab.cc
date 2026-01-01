@@ -1,5 +1,8 @@
 
+#ifdef __cplusplus
 extern "C" {
+#endif
+
 #include <limits.h>
 #include <math.h>
 
@@ -33,118 +36,116 @@ void destroyStringInfo(StringInfo str) {
   pfree(str);
 }
 #endif
-}
 
-extern "C" {
-    PG_MODULE_MAGIC;
+PG_MODULE_MAGIC;
 
-    /* GeQO GUC variables */
-    extern bool enable_geqo;
-    extern int geqo_threshold;
+/* GeQO GUC variables */
+extern bool enable_geqo;
+extern int geqo_threshold;
 
-    extern bool enable_material;
+extern bool enable_material;
 
-    /* Existing optimizer hooks */
-    extern planner_hook_type planner_hook;
-    static planner_hook_type prev_planner_hook = NULL;
-    extern ExecutorEnd_hook_type ExecutorEnd_hook;
-    static ExecutorEnd_hook_type prev_executor_end_hook = NULL;
+/* Existing optimizer hooks */
+extern planner_hook_type planner_hook;
+static planner_hook_type prev_planner_hook = NULL;
+extern ExecutorEnd_hook_type ExecutorEnd_hook;
+static ExecutorEnd_hook_type prev_executor_end_hook = NULL;
 
-    /* pg_lab hook additions */
-    extern prepare_make_one_rel_callback_type prepare_make_one_rel_callback;
-    static prepare_make_one_rel_callback_type prev_prepare_make_one_rel_hook = NULL;
+/* pg_lab hook additions */
+extern prepare_make_one_rel_callback_type prepare_make_one_rel_callback;
+static prepare_make_one_rel_callback_type prev_prepare_make_one_rel_hook = NULL;
 
-    extern final_path_callback_type final_path_callback;
-    static final_path_callback_type prev_final_path_callback = NULL;
+extern final_path_callback_type final_path_callback;
+static final_path_callback_type prev_final_path_callback = NULL;
 
-    extern join_search_hook_type join_search_hook;
-    static join_search_hook_type prev_join_search_hook = NULL;
+extern join_search_hook_type join_search_hook;
+static join_search_hook_type prev_join_search_hook = NULL;
 
-    extern add_path_hook_type add_path_hook;
-    static add_path_hook_type prev_add_path_hook = NULL;
+extern add_path_hook_type add_path_hook;
+static add_path_hook_type prev_add_path_hook = NULL;
 
-    extern add_partial_path_hook_type add_partial_path_hook;
-    static add_partial_path_hook_type prev_add_partial_path_hook = NULL;
+extern add_partial_path_hook_type add_partial_path_hook;
+static add_partial_path_hook_type prev_add_partial_path_hook = NULL;
 
-    extern add_path_precheck_hook_type add_path_precheck_hook;
-    static add_path_precheck_hook_type prev_add_path_precheck_hook = NULL;
+extern add_path_precheck_hook_type add_path_precheck_hook;
+static add_path_precheck_hook_type prev_add_path_precheck_hook = NULL;
 
-    extern add_partial_path_precheck_hook_type add_partial_path_precheck_hook;
-    static add_partial_path_precheck_hook_type prev_add_partial_path_precheck_hook = NULL;
+extern add_partial_path_precheck_hook_type add_partial_path_precheck_hook;
+static add_partial_path_precheck_hook_type prev_add_partial_path_precheck_hook = NULL;
 
-    extern set_rel_pathlist_hook_type set_rel_pathlist_hook;
-    static set_rel_pathlist_hook_type prev_rel_pathlist_hook = NULL;
+extern set_rel_pathlist_hook_type set_rel_pathlist_hook;
+static set_rel_pathlist_hook_type prev_rel_pathlist_hook = NULL;
 
-    extern set_join_pathlist_hook_type set_join_pathlist_hook;
-    static set_join_pathlist_hook_type prev_join_pathlist_hook = NULL;
+extern set_join_pathlist_hook_type set_join_pathlist_hook;
+static set_join_pathlist_hook_type prev_join_pathlist_hook = NULL;
 
-    extern set_baserel_size_estimates_hook_type set_baserel_size_estimates_hook;
-    static set_baserel_size_estimates_hook_type prev_baserel_size_estimates_hook = NULL;
+extern set_baserel_size_estimates_hook_type set_baserel_size_estimates_hook;
+static set_baserel_size_estimates_hook_type prev_baserel_size_estimates_hook = NULL;
 
-    extern set_joinrel_size_estimates_hook_type set_joinrel_size_estimates_hook;
-    static set_joinrel_size_estimates_hook_type prev_joinrel_size_estimates_hook = NULL;
+extern set_joinrel_size_estimates_hook_type set_joinrel_size_estimates_hook;
+static set_joinrel_size_estimates_hook_type prev_joinrel_size_estimates_hook = NULL;
 
-    extern compute_parallel_worker_hook_type compute_parallel_worker_hook;
-    static compute_parallel_worker_hook_type prev_compute_parallel_workers_hook = NULL;
+extern compute_parallel_worker_hook_type compute_parallel_worker_hook;
+static compute_parallel_worker_hook_type prev_compute_parallel_workers_hook = NULL;
 
-    extern cost_seqscan_hook_type cost_seqscan_hook;
-    static cost_seqscan_hook_type prev_cost_seqscan_hook = NULL;
+extern cost_seqscan_hook_type cost_seqscan_hook;
+static cost_seqscan_hook_type prev_cost_seqscan_hook = NULL;
 
-    extern cost_index_hook_type cost_index_hook;
-    static cost_index_hook_type prev_cost_index_hook = NULL;
+extern cost_index_hook_type cost_index_hook;
+static cost_index_hook_type prev_cost_index_hook = NULL;
 
-    extern cost_bitmap_heap_scan_hook_type cost_bitmap_heap_scan_hook;
-    static cost_bitmap_heap_scan_hook_type prev_cost_bitmap_heap_scan_hook = NULL;
+extern cost_bitmap_heap_scan_hook_type cost_bitmap_heap_scan_hook;
+static cost_bitmap_heap_scan_hook_type prev_cost_bitmap_heap_scan_hook = NULL;
 
-    extern initial_cost_nestloop_hook_type initial_cost_nestloop_hook;
-    static initial_cost_nestloop_hook_type prev_initial_cost_nestloop_hook = NULL;
-    extern final_cost_nestloop_hook_type final_cost_nestloop_hook;
-    static final_cost_nestloop_hook_type prev_final_cost_nestloop_hook = NULL;
+extern initial_cost_nestloop_hook_type initial_cost_nestloop_hook;
+static initial_cost_nestloop_hook_type prev_initial_cost_nestloop_hook = NULL;
+extern final_cost_nestloop_hook_type final_cost_nestloop_hook;
+static final_cost_nestloop_hook_type prev_final_cost_nestloop_hook = NULL;
 
-    extern initial_cost_hashjoin_hook_type initial_cost_hashjoin_hook;
-    static initial_cost_hashjoin_hook_type prev_initial_cost_hashjoin_hook = NULL;
-    extern final_cost_hashjoin_hook_type final_cost_hashjoin_hook;
-    static final_cost_hashjoin_hook_type prev_final_cost_hashjoin_hook = NULL;
+extern initial_cost_hashjoin_hook_type initial_cost_hashjoin_hook;
+static initial_cost_hashjoin_hook_type prev_initial_cost_hashjoin_hook = NULL;
+extern final_cost_hashjoin_hook_type final_cost_hashjoin_hook;
+static final_cost_hashjoin_hook_type prev_final_cost_hashjoin_hook = NULL;
 
-    extern initial_cost_mergejoin_hook_type initial_cost_mergejoin_hook;
-    static initial_cost_mergejoin_hook_type prev_initial_cost_mergejoin_hook = NULL;
-    extern final_cost_mergejoin_hook_type final_cost_mergejoin_hook;
-    static final_cost_mergejoin_hook_type prev_final_cost_mergejoin_hook = NULL;
+extern initial_cost_mergejoin_hook_type initial_cost_mergejoin_hook;
+static initial_cost_mergejoin_hook_type prev_initial_cost_mergejoin_hook = NULL;
+extern final_cost_mergejoin_hook_type final_cost_mergejoin_hook;
+static final_cost_mergejoin_hook_type prev_final_cost_mergejoin_hook = NULL;
 
-    /* extension boilerplate */
+/* extension boilerplate */
 
-    extern char **current_planner_type;
-    extern char **current_join_ordering_type;
+extern char **current_planner_type;
+extern char **current_join_ordering_type;
 
-    extern PGDLLEXPORT void _PG_init(void);
-    extern PGDLLEXPORT void _PG_fini(void);
+extern PGDLLEXPORT void _PG_init(void);
+extern PGDLLEXPORT void _PG_fini(void);
 
-    extern PGDLLEXPORT PlannedStmt *hint_aware_planner(Query*, const char*, int, ParamListInfo);
-    extern PGDLLEXPORT void hint_aware_make_one_rel_prep(PlannerInfo*, List*);
+extern PGDLLEXPORT PlannedStmt *hint_aware_planner(Query*, const char*, int, ParamListInfo);
+extern PGDLLEXPORT void hint_aware_make_one_rel_prep(PlannerInfo*, List*);
 
-    extern PGDLLEXPORT RelOptInfo *hint_aware_join_search(PlannerInfo*, int, List*);
+extern PGDLLEXPORT RelOptInfo *hint_aware_join_search(PlannerInfo*, int, List*);
 
-    extern PGDLLEXPORT void hint_aware_add_path(RelOptInfo*, Path*);
+extern PGDLLEXPORT void hint_aware_add_path(RelOptInfo*, Path*);
 
-    extern PGDLLEXPORT double hint_aware_baserel_size_estimates(PlannerInfo*, RelOptInfo*);
-    extern PGDLLEXPORT double hint_aware_joinrel_size_estimates(PlannerInfo*, RelOptInfo*,
-                                                                RelOptInfo*, RelOptInfo*,
-                                                                SpecialJoinInfo*, List*);
+extern PGDLLEXPORT double hint_aware_baserel_size_estimates(PlannerInfo*, RelOptInfo*);
+extern PGDLLEXPORT double hint_aware_joinrel_size_estimates(PlannerInfo*, RelOptInfo*,
+                                                            RelOptInfo*, RelOptInfo*,
+                                                            SpecialJoinInfo*, List*);
 
-    extern PGDLLEXPORT void hint_aware_initial_cost_nestloop(PlannerInfo *root,
-                                                             JoinCostWorkspace *workspace,
-                                                             JoinType jointype,
-                                                             Path *outer_path, Path *inner_path,
-                                                             JoinPathExtraData *extra);
-    extern PGDLLEXPORT void hint_aware_final_cost_nestloop(PlannerInfo *root, NestPath *path,
-                                                           JoinCostWorkspace *workspace,
-                                                           JoinPathExtraData *extra);
+extern PGDLLEXPORT void hint_aware_initial_cost_nestloop(PlannerInfo *root,
+                                                            JoinCostWorkspace *workspace,
+                                                            JoinType jointype,
+                                                            Path *outer_path, Path *inner_path,
+                                                            JoinPathExtraData *extra);
+extern PGDLLEXPORT void hint_aware_final_cost_nestloop(PlannerInfo *root, NestPath *path,
+                                                        JoinCostWorkspace *workspace,
+                                                        JoinPathExtraData *extra);
 
-    extern PGDLLEXPORT void hint_aware_ExecutorEnd(QueryDesc *queryDesc);
+extern PGDLLEXPORT void hint_aware_ExecutorEnd(QueryDesc *queryDesc);
 
-    extern TempGUC **guc_cleanup_actions;
-    extern int n_cleanup_actions;
-}
+extern TempGUC **guc_cleanup_actions;
+extern int n_cleanup_actions;
+
 
 static bool enable_pglab = true;
 static bool pglab_check_final_path = true;
@@ -154,9 +155,9 @@ static bool trace_pruning = false;
 char *current_query_string = NULL;
 
 /*
- * We explicitly store the PlannerInfo as a static variable because some low-level routines in the planner do not receive it
- * as an argument. But, some of our hint-aware variants of these routines need it.
- */
+* We explicitly store the PlannerInfo as a static variable because some low-level routines in the planner do not
+* receive it as an argument. But, some of our hint-aware variants of these routines need it.
+*/
 static PlannerInfo  *current_planner_root = NULL;
 
 /* The hints that are available for the current query. */
@@ -1639,7 +1640,7 @@ check_path_recursive(PlannerHints *hints, Path *path, bool is_partial)
  * Sadly, in the planner entry point the PlannerInfo is not yet available, so we can only export the raw query string and
  * need to delegate the actual parsing of the hints to the pg_lab-specific make_one_rel_prep() hook.
  */
-extern "C" PlannedStmt *
+PlannedStmt *
 hint_aware_planner(Query* parse, const char* query_string, int cursorOptions, ParamListInfo boundParams)
 {
     PlannedStmt *result;
@@ -1667,7 +1668,7 @@ hint_aware_planner(Query* parse, const char* query_string, int cursorOptions, Pa
     return result;
 }
 
-extern "C" void
+void
 hint_aware_ExecutorEnd(QueryDesc *queryDesc)
 {
     ListCell *lc;
@@ -1699,7 +1700,7 @@ hint_aware_ExecutorEnd(QueryDesc *queryDesc)
  * The make_one_rel_prep() hook is called before the actual planning starts. We use it to extract the hints from our raw
  * query string.
  */
-extern "C" void
+void
 hint_aware_make_one_rel_prep(PlannerInfo *root, List *joinlist)
 {
     PlannerHints *hints;
@@ -1729,7 +1730,7 @@ hint_aware_make_one_rel_prep(PlannerInfo *root, List *joinlist)
     current_hints = hints;
 }
 
-extern "C" Path *
+Path *
 hint_aware_final_path_callback(PlannerInfo *root, RelOptInfo *rel, Path *best_path)
 {
     if (current_hints && current_hints->contains_hint)
@@ -1753,7 +1754,7 @@ hint_aware_final_path_callback(PlannerInfo *root, RelOptInfo *rel, Path *best_pa
  * definitely not useful (at least according to the native cost model). We need to overwrite this behavior to enforce our
  * current hints.
  */
-extern "C" bool
+bool
 hint_aware_add_path_precheck(RelOptInfo *parent_rel, Cost startup_cost, Cost total_cost,
                              List *pathkeys, Relids required_outer)
 {
@@ -1772,7 +1773,7 @@ hint_aware_add_path_precheck(RelOptInfo *parent_rel, Cost startup_cost, Cost tot
  * they are definitely not useful (at least according to the native cost model). We need to overwrite this behavior to enforce
  * our current hints.
  */
-extern "C" bool
+bool
 hint_aware_add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost, List *pathkeys)
 {
     if (current_hints && (current_hints->join_order_hint || current_hints->join_prefixes || current_hints->operator_hints))
@@ -1814,7 +1815,7 @@ evict_path(Path *path, bool is_partial)
 }
 
 
-extern "C" void
+void
 hint_aware_add_path(RelOptInfo *parent_rel, Path *path)
 {
     OperatorHint *op_hint;
@@ -1892,7 +1893,7 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *path)
     PG_ADD_PATH(parent_rel, path);
 }
 
-extern "C" void
+void
 hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *path)
 {
     OperatorHint *op_hint;
@@ -1937,7 +1938,7 @@ hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *path)
     PG_ADD_PARTIAL_PATH(parent_rel, path);
 }
 
-extern "C" int
+int
 hint_aware_compute_parallel_workers(RelOptInfo *rel, double heap_pages,
                                     double index_pages, int max_workers)
 {
@@ -1969,7 +1970,7 @@ set_baserel_size_fallback(PlannerInfo *root, RelOptInfo *rel)
         return standard_set_baserel_size_estimates(root, rel);
 }
 
-extern "C" double
+double
 hint_aware_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel)
 {
     bool hint_found = false;
@@ -1995,7 +1996,7 @@ set_joinrel_size_fallback(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *outer_
         return standard_set_joinrel_size_estimates(root, rel, outer_rel, inner_rel, sjinfo, restrictlist);
 }
 
-extern "C" double
+double
 hint_aware_joinrel_size_estimates(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *outer_rel,
                                  RelOptInfo *inner_rel, SpecialJoinInfo *sjinfo, List *restrictlist)
 {
@@ -2096,7 +2097,7 @@ join_search_fallback(PlannerInfo *root, int levels_needed, List *initial_rels)
  * we still want the operator selection to be handled by GEQO. Therefore, we use a special GEQO-style join "search" to generate
  * the final RelOptInfo. In all other cases, we simply fall back to the standard policies.
  */
-extern "C" RelOptInfo *
+RelOptInfo *
 hint_aware_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 {
     RelOptInfo *result;
@@ -2117,7 +2118,7 @@ hint_aware_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
     return result;
 }
 
-extern "C" void
+void
 hint_aware_cost_seqscan(Path *path, PlannerInfo *root, RelOptInfo *baserel, ParamPathInfo *param_info)
 {
     bool hint_found = false;
@@ -2145,7 +2146,7 @@ hint_aware_cost_seqscan(Path *path, PlannerInfo *root, RelOptInfo *baserel, Para
         path->total_cost = total_cost;
 }
 
-extern "C" void
+void
 hint_aware_cost_idxscan(IndexPath *path, PlannerInfo *root, double loop_count, bool partial_path)
 {
     bool hint_found = false;
@@ -2173,7 +2174,7 @@ hint_aware_cost_idxscan(IndexPath *path, PlannerInfo *root, double loop_count, b
         path->path.total_cost = total_cost;
 }
 
-extern "C" void
+void
 hint_aware_cost_bitmapscan(Path *path, PlannerInfo *root, RelOptInfo *baserel, ParamPathInfo *param_info,
                            Path *bitmapqual, double loop_count)
 {
@@ -2202,7 +2203,7 @@ hint_aware_cost_bitmapscan(Path *path, PlannerInfo *root, RelOptInfo *baserel, P
         path->total_cost = total_cost;
 }
 
-extern "C" void
+void
 hint_aware_initial_cost_nestloop(PlannerInfo *root,
                                  JoinCostWorkspace *workspace,
 								 JoinType jointype,
@@ -2237,7 +2238,7 @@ hint_aware_initial_cost_nestloop(PlannerInfo *root,
         workspace->total_cost = total_cost;
 }
 
-extern "C" void
+void
 hint_aware_final_cost_nestloop(PlannerInfo *root, NestPath *path,
                                JoinCostWorkspace *workspace,
 							   JoinPathExtraData *extra)
@@ -2270,7 +2271,7 @@ hint_aware_final_cost_nestloop(PlannerInfo *root, NestPath *path,
 }
 
 
-extern "C" void
+void
 hint_aware_initial_cost_hashjoin(PlannerInfo *root,
                                  JoinCostWorkspace *workspace,
 								 JoinType jointype,
@@ -2307,7 +2308,7 @@ hint_aware_initial_cost_hashjoin(PlannerInfo *root,
         workspace->total_cost = total_cost;
 }
 
-extern "C" void
+void
 hint_aware_final_cost_hashjoin(PlannerInfo *root, HashPath *path,
                                JoinCostWorkspace *workspace,
                                JoinPathExtraData *extra)
@@ -2339,7 +2340,7 @@ hint_aware_final_cost_hashjoin(PlannerInfo *root, HashPath *path,
         raw_path->total_cost = total_cost;
 }
 
-extern "C" void
+void
 hint_aware_intial_cost_mergejoin(PlannerInfo *root,
                                  JoinCostWorkspace *workspace,
                                  JoinType jointype,
@@ -2378,7 +2379,7 @@ hint_aware_intial_cost_mergejoin(PlannerInfo *root,
         workspace->total_cost = total_cost;
 }
 
-extern "C" void
+void
 hint_aware_final_cost_mergejoin(PlannerInfo *root, MergePath *path,
                                 JoinCostWorkspace *workspace,
                                 JoinPathExtraData *extra)
@@ -2455,7 +2456,7 @@ debug_fetch_inner(Path *path)
 }
 
 
-extern "C" void
+void
 _PG_init(void)
 {
     DefineCustomBoolVariable("enable_pglab",
@@ -2537,7 +2538,7 @@ _PG_init(void)
     ExecutorEnd_hook = hint_aware_ExecutorEnd;
 }
 
-extern "C" void
+void
 _PG_fini(void)
 {
     planner_hook = prev_planner_hook;
@@ -2562,3 +2563,8 @@ _PG_fini(void)
     compute_parallel_worker_hook = prev_compute_parallel_workers_hook;
     ExecutorEnd_hook = prev_executor_end_hook;
 }
+
+
+#ifdef __cplusplus
+}  /* extern "C" */
+#endif

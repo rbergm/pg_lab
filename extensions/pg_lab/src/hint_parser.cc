@@ -295,9 +295,7 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
 
 };
 
-extern "C" {
-
-void
+extern "C" void
 parse_hint_block(PlannerInfo *root, PlannerHints *hints)
 {
     std::string query_buffer = std::string(hints->raw_query);
@@ -324,6 +322,4 @@ parse_hint_block(PlannerInfo *root, PlannerHints *hints)
 
     if (hints->mode == HINTMODE_FULL && hints->parallel_mode == PARMODE_DEFAULT)
         hints->parallel_mode = PARMODE_SEQUENTIAL;
-}
-
 }
