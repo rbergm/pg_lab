@@ -4,7 +4,7 @@
 ![GitHub Release](https://img.shields.io/github/v/release/rbergm/pg_lab?color=blue)
 
 <p align="center">
-  <img src="assets/pg_lab_logo.png" width="256" alt="The Logo of pg_lab: a blue elephant wearing a chemist's coat is surrounded by various reagents." />
+  <img src="assets/pg_lab_logo.png" width="256" alt="The Logo of pg_lab: a blue elephant wearing a lab coat is surrounded by various reagents." />
 </p>
 
 _pg\_lab_ is a research-focused fork of PostgreSQL.
@@ -16,7 +16,7 @@ It has two main goals:
 These goals are achieved by introducing new extensions points into the original Postgres code base and shipping a hinting
 extension similar to [pg_hint_plan](https://github.com/ossc-db/pg_hint_plan).
 Essentially, this requires to maintain a fork of the Postgres source code (available at
-https://github.com/rbergm/postgres).
+https://github.com/Optimizer-Playground/postgres-pglab).
 Our SIGMOD'2025 paper [^elephant] provides some insight into the motivation behind pg_lab.
 
 | **💻 [Installation](docs/installation.md)** | **📝 [Hinting](docs/hinting.md)** | **🛠️ [Extension Points](docs/extension_points.md)** |

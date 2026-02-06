@@ -1,4 +1,4 @@
 [submodule "postgres"]
 	path = pg-source
-	url = https://github.com/rbergm/postgres-pglab.git
+	url = https://github.com/Optimizer-Playground/postgres-pglab.git
 	ignore = all
