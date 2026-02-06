@@ -2,7 +2,8 @@ cmake_minimum_required(VERSION 3.19)
 project(pg_lab
     VERSION 0.0.3
     DESCRIPTION ""
-    LANGUAGES CXX)
+    LANGUAGES CXX
+)
 
 include(FetchContent)
 
@@ -18,8 +19,30 @@ elseif (CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_compile_options(-O0)
 endif()
 
-set(PG_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../pg-build/pg-17" CACHE PATH "PostgreSQL server installation directory")
-message(STATUS "Using PostgreSQL server path: ${PG_INSTALL_DIR}")
+execute_process(
+    COMMAND which pg_config
+    OUTPUT_VARIABLE PG_CONFIG_EXECUTABLE
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+
+if (PG_CONFIG_EXECUTABLE)
+    message(STATUS "Using pg_config executable at: ${PG_CONFIG_EXECUTABLE}")
+    execute_process(
+        COMMAND ${PG_CONFIG_EXECUTABLE} --includedir
+        OUTPUT_VARIABLE PG_INCLUDE_DIR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    execute_process(
+        COMMAND ${PG_CONFIG_EXECUTABLE} --libdir
+        OUTPUT_VARIABLE PG_LIB_DIR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+else()
+    message(FATAL_ERROR "pg_config not found. Please specify the PostgreSQL server installation directory using PG_INSTALL_DIR.")
+endif()
+
+message(STATUS "PostgreSQL include directory: ${PG_INCLUDE_DIR}")
+message(STATUS "PostgreSQL library directory: ${PG_LIB_DIR}")
 
 
 set(PGLAB_TRACE OFF CACHE BOOL "Enable tracing of the hinting extension")
@@ -65,39 +88,29 @@ antlr_target(HintBlockGrammar HintBlock.g4 BOTH LISTENER PACKAGE pg_lab)
 # Project config
 #
 
-add_library(pg_lab MODULE
-    src/pg_lab.cc
-    src/hints.cc
-    src/hint_parser.cc
-    ${ANTLR_HintBlockGrammar_CXX_OUTPUTS})
-
 if(APPLE)
     set_target_properties(pg_lab PROPERTIES
         LINK_FLAGS "-Wl,-undefined,dynamic_lookup -Wl,-flat_namespace"
     )
 endif()
 
-target_link_libraries(pg_lab PRIVATE antlr4_static)
+add_library(pg_lab MODULE
+    src/pg_lab.cc
+    src/hints.cc
+    src/hint_parser.cc
+    ${ANTLR_HintBlockGrammar_CXX_OUTPUTS}
+)
 
-target_include_directories(pg_lab PRIVATE include)
 target_include_directories(pg_lab PRIVATE
-    "${PG_INSTALL_DIR}/include/postgresql/server")
-target_include_directories(pg_lab PRIVATE
+    "include"
+    "${PG_INCLUDE_DIR}"
+    "${PG_INCLUDE_DIR}/server"
+    "${PG_INCLUDE_DIR}/postgresql/server"
     "${antlr_SOURCE_DIR}/runtime/Cpp/runtime/src"
-    "${ANTLR_HintBlockGrammar_OUTPUT_DIR}")
+    "${ANTLR_HintBlockGrammar_OUTPUT_DIR}"
+)
 
-find_program(PG_CONFIG_EXECUTABLE pg_config)
-if(PG_CONFIG_EXECUTABLE)
-    execute_process(
-        COMMAND ${PG_CONFIG_EXECUTABLE} --libdir
-        OUTPUT_VARIABLE PG_LIB_DIR
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-    )
-else()
-    set(PG_LIB_DIR "${PG_INSTALL_DIR}/lib/postgresql")
-endif()
-
-
+target_link_libraries(pg_lab PRIVATE antlr4_static)
 
 add_custom_command(TARGET pg_lab POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy

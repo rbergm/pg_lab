@@ -18,7 +18,8 @@ Generally speaking, this is the preferred installation method.
 >    build-essential meson ninja-build \
 >    bison flex curl pkg-config cmake llvm clang \
 >    zstd default-jre \
->    libicu-dev libreadline-dev libssl-dev libzstd-dev liblz4-dev libossp-uuid-dev
+>    libicu-dev libreadline-dev libssl-dev libzstd-dev liblz4-dev libossp-uuid-dev \
+>    liburing-dev
 > ```
 >
 > On Fedora-like systems, the following should do the trick:
@@ -101,7 +102,7 @@ When creating the pg_lab container, you can pass most of the settings that the *
 |----------|-------------|---------|
 | `USERNAME` | The username in the container. This is also used as the Postgres user. The server password is the same as the username. | *lab* |
 | `TIMEZONE` | The timezone of the server. Defaults to *UTC*. | *UTC* |
-| `PGVER` | The Postgres server version to use. Currently, pg_lab supports PG 16 and 17. | 17 |
+| `PGVER` | The Postgres server version to use. Currently, pg_lab supports PG 16, 17, and 18. | 18 |
 | `DEBUG` | Whether a debug build should be used. Allowed values are *true* and *false*. | *false* |
 
 The image exposes the default Postgres port `5432`.

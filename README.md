@@ -33,9 +33,9 @@ sudo apt install -y \
    build-essential meson ninja-build sudo tzdata procps \
    bison flex curl pkg-config cmake llvm clang \
    git vim unzip zstd default-jre \
-   libicu-dev libreadline-dev libssl-dev libzstd-dev liblz4-dev libossp-uuid-dev
+   libicu-dev libreadline-dev libssl-dev libzstd-dev liblz4-dev libossp-uuid-dev liburing-dev
 
-./postgres-setup.sh --pg-ver 17 --debug --stop
+./postgres-setup.sh --pg-ver 18 --debug --stop
 
 . ./postgres-start.sh
 ```
@@ -43,7 +43,7 @@ sudo apt install -y \
 For the **Docker installation**, use the following:
 
 ```sh
-docker build -t pg_lab --build-arg TIMEZONE=$(cat /etc/timezone) .
+docker build -t pg_lab --build-arg TIMEZONE=$(cat /etc/timezone) --build-arg PG_VER=18 .
 
 docker run -d --name pg_lab -p 5432:5432 --volume $PWD/docker-volume:/pg_lab pg_lab
 

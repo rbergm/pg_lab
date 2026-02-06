@@ -82,16 +82,65 @@ static void cout_initial_cost_hashjoin(PlannerInfo *root, JoinCostWorkspace *wor
                                        List *hashclauses, Path *outer_path, Path *inner_path, JoinPathExtraData *extra,
                                        bool parallel_hash);
 static void cout_final_cost_hashjoin(PlannerInfo *root, HashPath *path, JoinCostWorkspace *workspace, JoinPathExtraData *extra);
-static void cout_initial_cost_mergejoin(PlannerInfo *root, JoinCostWorkspace *workspace, JoinType jointype,
-                                        List *mergeclauses, Path *outer_path, Path *inner_path, List *outersortkeys,
-                                        List *innersortkeys, JoinPathExtraData *extra);
+
+
+#if PG_VERSION_NUM >= 180000
+static void cout_initial_cost_mergejoin(PlannerInfo *root,
+                                        JoinCostWorkspace *workspace,
+                                        JoinType jointype,
+                                        List *mergeclauses,
+                                        Path *outer_path, Path *inner_path,
+                                        List *outersortkeys, List *innersortkeys,
+                                        int outer_presorted_keys,
+                                        JoinPathExtraData *extra);
+#else
+static void cout_initial_cost_mergejoin(PlannerInfo *root,
+                                        JoinCostWorkspace *workspace,
+                                        JoinType jointype,
+                                        List *mergeclauses,
+                                        Path *outer_path, Path *inner_path,
+                                        List *outersortkeys, List *innersortkeys,
+                                        JoinPathExtraData *extra);
+#endif
+
 static void cout_final_cost_mergejoin(PlannerInfo *root, MergePath *path, JoinCostWorkspace *workspace, JoinPathExtraData *extra);
-static void cout_cost_sort(Path *path, PlannerInfo *root, List *pathkeys, Cost input_cost, double tuples, int width,
-                           Cost comparison_cost, int sort_mem, double limit_tuples);
+
+#if PG_VERSION_NUM >= 180000
+static void cout_cost_sort(Path *path, PlannerInfo *root,
+                           List *pathkeys, int input_disabled_nodes,
+                           Cost input_cost, double tuples, int width,
+                           Cost comparison_cost, int sort_mem,
+                           double limit_tuples);
+#else
+static void cout_cost_sort(Path *path, PlannerInfo *root,
+                           List *pathkeys, Cost input_cost, double tuples, int width,
+                           Cost comparison_cost, int sort_mem,
+                           double limit_tuples);
+#endif
+
+#if PG_VERSION_NUM >= 180000
+static void cout_cost_incremental_sort(Path *path, PlannerInfo *root, List *pathkeys, int presorted_keys,
+                                       int input_disabled_nodes,
+                                       Cost input_startup_cost, Cost input_total_cost, double input_tuples, int width,
+                                       Cost comparison_cost, int sort_mem, double limit_tuples);
+#else
 static void cout_cost_incremental_sort(Path *path, PlannerInfo *root, List *pathkeys, int presorted_keys,
                                        Cost input_startup_cost, Cost input_total_cost, double input_tuples, int width,
                                        Cost comparison_cost, int sort_mem, double limit_tuples);
-static void cout_cost_materialize(Path *path, Cost input_startup_cost, Cost input_total_cost, double tuples, int width);
+#endif
+
+#if PG_VERSION_NUM >= 180000
+static void cout_cost_materialize(Path *path,
+                                  int input_disabled_nodes,
+                                  Cost input_startup_cost, Cost input_total_cost,
+                                  double tuples, int width);
+#else
+static void cout_cost_materialize(Path *path,
+                                  Cost input_startup_cost, Cost input_total_cost,
+                                  double tuples, int width);
+#endif
+
+
 static void cout_cost_memoize(PlannerInfo *root, MemoizePath *mpath, Cost *rescan_startup_cost, Cost *rescan_total_cost);
 
 
@@ -347,19 +396,40 @@ cout_final_cost_hashjoin(PlannerInfo *root, HashPath *path, JoinCostWorkspace *w
 }
 
 void
-cout_initial_cost_mergejoin(PlannerInfo *root, JoinCostWorkspace *workspace, JoinType jointype,
-                            List *mergeclauses, Path *outer_path, Path *inner_path,
-                            List *outersortkeys, List *innersortkeys, JoinPathExtraData *extra)
+cout_initial_cost_mergejoin(PlannerInfo *root,
+                            JoinCostWorkspace *workspace,
+                            JoinType jointype,
+                            List *mergeclauses,
+                            Path *outer_path, Path *inner_path,
+                            List *outersortkeys, List *innersortkeys,
+                            #if PG_VERSION_NUM >= 180000
+                            int outer_presorted_keys,
+                            #endif
+                            JoinPathExtraData *extra)
 {
     Cost startup_cost, total_cost;
 
     if (prev_initial_cost_mergejoin_hook)
-        (*prev_initial_cost_mergejoin_hook)(root, workspace, jointype,
-                                            mergeclauses, outer_path, inner_path, outersortkeys, innersortkeys,
+        (*prev_initial_cost_mergejoin_hook)(root,
+                                            workspace,
+                                            jointype,
+                                            mergeclauses,
+                                            outer_path, inner_path,
+                                            outersortkeys, innersortkeys,
+                                            #if PG_VERSION_NUM >= 180000
+                                            outer_presorted_keys,
+                                            #endif
                                             extra);
     else
-        standard_initial_cost_mergejoin(root, workspace, jointype,
-                                        mergeclauses, outer_path, inner_path, outersortkeys, innersortkeys,
+        standard_initial_cost_mergejoin(root,
+                                        workspace,
+                                        jointype,
+                                        mergeclauses,
+                                        outer_path, inner_path,
+                                        outersortkeys, innersortkeys,
+                                        #if PG_VERSION_NUM >= 180000
+                                        outer_presorted_keys,
+                                        #endif
                                         extra);
 
     startup_cost = total_cost = 0.0;
@@ -441,14 +511,32 @@ cout_final_cost_mergejoin(PlannerInfo *root, MergePath *path, JoinCostWorkspace 
 
 void
 cout_cost_sort(Path *path, PlannerInfo *root,
-               List *pathkeys, Cost input_cost, double tuples, int width,
+               List *pathkeys,
+               #if PG_VERSION_NUM >= 180000
+               int input_disabled_nodes,
+               #endif
+               Cost input_cost, double tuples, int width,
 			   Cost comparison_cost, int sort_mem,
 			   double limit_tuples)
 {
     if (prev_cost_sort_hook)
-        (*prev_cost_sort_hook)(path, root, pathkeys, input_cost, tuples, width, comparison_cost, sort_mem, limit_tuples);
+        (*prev_cost_sort_hook)(path, root,
+                               pathkeys,
+                               #if PG_VERSION_NUM >= 180000
+                               input_disabled_nodes,
+                               #endif
+                               input_cost, tuples, width,
+                               comparison_cost, sort_mem,
+                               limit_tuples);
     else
-        standard_cost_sort(path, root, pathkeys, input_cost, tuples, width, comparison_cost, sort_mem, limit_tuples);
+        standard_cost_sort(path, root,
+                           pathkeys,
+                           #if PG_VERSION_NUM >= 180000
+                           input_disabled_nodes,
+                           #endif
+                           input_cost, tuples, width,
+                           comparison_cost, sort_mem,
+                           limit_tuples);
 
     path->startup_cost = tuples * log10(tuples) + input_cost;
     path->total_cost = path->startup_cost;
@@ -463,14 +551,31 @@ cout_cost_sort(Path *path, PlannerInfo *root,
 void
 cout_cost_incremental_sort(Path *path,
                            PlannerInfo *root, List *pathkeys, int presorted_keys,
+                           #if PG_VERSION_NUM >= 180000
+                           int input_disabled_nodes,
+                           #endif
 						   Cost input_startup_cost, Cost input_total_cost,
 						   double input_tuples, int width, Cost comparison_cost, int sort_mem,
 						   double limit_tuples)
 {
     if (prev_cost_incremental_sort_hook)
-        (*prev_cost_incremental_sort_hook)(path, root, pathkeys, presorted_keys, input_startup_cost, input_total_cost, input_tuples, width, comparison_cost, sort_mem, limit_tuples);
+        (*prev_cost_incremental_sort_hook)(path,
+                                           root, pathkeys, presorted_keys,
+                                           #if PG_VERSION_NUM >= 180000
+                                           input_disabled_nodes,
+                                           #endif
+                                           input_startup_cost, input_total_cost,
+                                           input_tuples, width, comparison_cost, sort_mem,
+                                           limit_tuples);
     else
-        standard_cost_incremental_sort(path, root, pathkeys, presorted_keys, input_startup_cost, input_total_cost, input_tuples, width, comparison_cost, sort_mem, limit_tuples);
+        standard_cost_incremental_sort(path,
+                                       root, pathkeys, presorted_keys,
+                                       #if PG_VERSION_NUM >= 180000
+                                       input_disabled_nodes,
+                                       #endif
+                                       input_startup_cost, input_total_cost,
+                                       input_tuples, width, comparison_cost, sort_mem,
+                                       limit_tuples);
 
     path->startup_cost = input_tuples * log10(input_tuples) + input_total_cost;
     path->total_cost = path->startup_cost;
@@ -483,12 +588,27 @@ cout_cost_incremental_sort(Path *path,
 }
 
 void
-cout_cost_materialize(Path *path, Cost input_startup_cost, Cost input_total_cost, double tuples, int width)
+cout_cost_materialize(Path *path,
+                      #if PG_VERSION_NUM >= 180000
+                      int input_disabled_nodes,
+                      #endif
+                      Cost input_startup_cost, Cost input_total_cost,
+                      double tuples, int width)
 {
     if (prev_cost_material_hook)
-        (*prev_cost_material_hook)(path, input_startup_cost, input_total_cost, tuples, width);
+        (*prev_cost_material_hook)(path,
+                                   #if PG_VERSION_NUM >= 180000
+                                   input_disabled_nodes,
+                                   #endif
+                                   input_startup_cost, input_total_cost,
+                                   tuples, width);
     else
-        standard_cost_material(path, input_startup_cost, input_total_cost, tuples, width);
+        standard_cost_material(path,
+                               #if PG_VERSION_NUM >= 180000
+                               input_disabled_nodes,
+                               #endif
+                               input_startup_cost, input_total_cost,
+                               tuples, width);
 
     path->startup_cost = input_startup_cost;
     path->total_cost = input_total_cost + tuples;

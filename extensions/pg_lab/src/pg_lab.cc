@@ -434,7 +434,11 @@ path_to_string(Path *path)
         {
             SetOpPath *spath;
             spath = (SetOpPath *) path;
+            #if PG_VERSION_NUM >= 180000
+            appendStringInfo(buf, "(%s, %s)", path_to_string(spath->leftpath), path_to_string(spath->rightpath));
+            #else
             appendStringInfo(buf, "(%s)", path_to_string(spath->subpath));
+            #endif
             break;
         }
         case T_Limit:
@@ -603,7 +607,12 @@ path_satisfies_joinorder(Path *path, JoinOrder *join_order, OperatorHint **op_hi
         {
             SetOpPath *spath;
             spath = (SetOpPath *) path;
+            #if PG_VERSION_NUM >= 180000
+            return path_satisfies_joinorder(spath->leftpath, join_order, op_hint)
+                    && path_satisfies_joinorder(spath->rightpath, join_order, op_hint);
+            #else
             return path_satisfies_joinorder(spath->subpath, join_order, op_hint);
+            #endif
         }
         case T_Limit:
         {
@@ -791,7 +800,12 @@ path_satisfies_operators(PlannerHints *hints, Path *path, OperatorHint *op_hint)
         {
             SetOpPath *spath;
             spath = (SetOpPath *) path;
+            #if PG_VERSION_NUM >= 180000
+            return path_satisfies_operators(hints, spath->leftpath, op_hint)
+                    && path_satisfies_operators(hints, spath->rightpath, op_hint);
+            #else
             return path_satisfies_operators(hints, spath->subpath, op_hint);
+            #endif
         }
         case T_Limit:
         {
@@ -1094,7 +1108,18 @@ find_parallel_subpath(Path *path)
         {
             SetOpPath *spath;
             spath = (SetOpPath *) path;
+            #if PG_VERSION_NUM >= 180000
+            {
+                Path *left_par, *right_par;
+                left_par = find_parallel_subpath(spath->leftpath);
+                if (left_par)
+                    return left_par;
+                right_par = find_parallel_subpath(spath->rightpath);
+                return right_par;
+            }
+            #else
             return find_parallel_subpath(spath->subpath);
+            #endif
         }
         case T_Limit:
         {
@@ -1581,7 +1606,12 @@ check_path_recursive(PlannerHints *hints, Path *path, bool is_partial)
         {
             SetOpPath *spath;
             spath = (SetOpPath *) path;
+            #if PG_VERSION_NUM >= 180000
+            return check_path_recursive(hints, spath->leftpath, is_partial)
+                    && check_path_recursive(hints, spath->rightpath, is_partial);
+            #else
             return check_path_recursive(hints, spath->subpath, is_partial);
+            #endif
         }
         case T_Limit:
         {
@@ -1755,7 +1785,11 @@ hint_aware_final_path_callback(PlannerInfo *root, RelOptInfo *rel, Path *best_pa
  * current hints.
  */
 bool
-hint_aware_add_path_precheck(RelOptInfo *parent_rel, Cost startup_cost, Cost total_cost,
+hint_aware_add_path_precheck(RelOptInfo *parent_rel,
+                             #if PG_VERSION_NUM >= 180000
+                             int disabled_nodes,
+                             #endif
+                             Cost startup_cost, Cost total_cost,
                              List *pathkeys, Relids required_outer)
 {
     if (current_hints && (current_hints->join_order_hint || current_hints->join_prefixes || current_hints->operator_hints))
@@ -1763,9 +1797,19 @@ hint_aware_add_path_precheck(RelOptInfo *parent_rel, Cost startup_cost, Cost tot
         return true;
 
     if (prev_add_path_precheck_hook)
-        return (*prev_add_path_precheck_hook)(parent_rel, startup_cost, total_cost, pathkeys, required_outer);
+        return (*prev_add_path_precheck_hook)(parent_rel,
+                                              #if PG_VERSION_NUM >= 180000
+                                              disabled_nodes,
+                                              #endif
+                                              startup_cost, total_cost,
+                                              pathkeys, required_outer);
     else
-        return standard_add_path_precheck(parent_rel, startup_cost, total_cost, pathkeys, required_outer);
+        return standard_add_path_precheck(parent_rel,
+                                          #if PG_VERSION_NUM >= 180000
+                                          disabled_nodes,
+                                          #endif
+                                          startup_cost, total_cost,
+                                          pathkeys, required_outer);
 }
 
 /*
@@ -1774,16 +1818,28 @@ hint_aware_add_path_precheck(RelOptInfo *parent_rel, Cost startup_cost, Cost tot
  * our current hints.
  */
 bool
-hint_aware_add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost, List *pathkeys)
+hint_aware_add_partial_path_precheck(RelOptInfo *parent_rel,
+                                     #if PG_VERSION_NUM >= 180000
+                                     int disabled_nodes,
+                                     #endif
+                                     Cost total_cost, List *pathkeys)
 {
     if (current_hints && (current_hints->join_order_hint || current_hints->join_prefixes || current_hints->operator_hints))
         /* XXX: we could be smarter and try to check, whether there actually is a hint concerning the current path */
         return true;
 
     if (prev_add_partial_path_precheck_hook)
-        return (*prev_add_partial_path_precheck_hook)(parent_rel, total_cost, pathkeys);
+        return (*prev_add_partial_path_precheck_hook)(parent_rel,
+                                                      #if PG_VERSION_NUM >= 180000
+                                                      disabled_nodes,
+                                                      #endif
+                                                      total_cost, pathkeys);
     else
-        return standard_add_partial_path_precheck(parent_rel, total_cost, pathkeys);
+        return standard_add_partial_path_precheck(parent_rel,
+                                                  #if PG_VERSION_NUM >= 180000
+                                                  disabled_nodes,
+                                                  #endif
+                                                  total_cost, pathkeys);
 }
 
 
@@ -2347,6 +2403,9 @@ hint_aware_intial_cost_mergejoin(PlannerInfo *root,
                                  List *mergeclauses,
                                  Path *outer_path, Path *inner_path,
                                  List *outersortkeys, List *innersortkeys,
+                                 #if PG_VERSION_NUM >= 180000
+                                 int outer_presorted_keys,
+                                 #endif
                                  JoinPathExtraData *extra)
 {
     bool hint_found = false;
@@ -2355,11 +2414,27 @@ hint_aware_intial_cost_mergejoin(PlannerInfo *root,
     Cost startup_cost, total_cost;
 
     if (prev_initial_cost_mergejoin_hook)
-        (*prev_initial_cost_mergejoin_hook)(root, workspace, jointype, mergeclauses, outer_path, inner_path,
-                                            outersortkeys, innersortkeys, extra);
+        (*prev_initial_cost_mergejoin_hook)(root,
+                                            workspace,
+                                            jointype,
+                                            mergeclauses,
+                                            outer_path, inner_path,
+                                            outersortkeys, innersortkeys,
+                                            #if PG_VERSION_NUM >= 180000
+                                            outer_presorted_keys,
+                                            #endif
+                                            extra);
     else
-        standard_initial_cost_mergejoin(root, workspace, jointype, mergeclauses, outer_path, inner_path,
-                                        outersortkeys, innersortkeys, extra);
+        standard_initial_cost_mergejoin(root,
+                                        workspace,
+                                        jointype,
+                                        mergeclauses,
+                                        outer_path, inner_path,
+                                        outersortkeys, innersortkeys,
+                                        #if PG_VERSION_NUM >= 180000
+                                        outer_presorted_keys,
+                                        #endif
+                                        extra);
 
     if (!current_hints || !current_hints->cost_hints)
         return;

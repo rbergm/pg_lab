@@ -8,6 +8,7 @@ RUN apt update && apt install -y \
         build-essential meson ninja-build sudo locales tzdata procps lsof \
         bison flex curl pkg-config cmake llvm clang \
         libicu-dev libreadline-dev libssl-dev liblz4-dev libossp-uuid-dev libzstd-dev zlib1g-dev \
+        liburing-dev \
         python3 python3-venv python3-pip \
         git vim unzip zstd default-jre tmux ; \
     locale-gen en_US.UTF-8 && \

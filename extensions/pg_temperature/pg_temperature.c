@@ -49,22 +49,6 @@ struct MdfdVecData
     BlockNumber mdfd_segno;
 };
 
-/*
- * Copied from fd.h because this struct is not available in any header file and
- * we need it to find the FD to call posix_fadvise().
- * This is really ugly, but still the best we can do for now.
- */
-struct vfd
-{
-    int fd;
-
-    /*
-     * Actually, there are a lot of additional fields in vfd, but we only care about the fd.
-     * Omitting the rest here means that we need to be a bit careful with casts to/from vfd
-     * and sizeof() calls.
-     */
-};
-
 
 /*
  * Extension-specific (GUC) variables, definitions and setup

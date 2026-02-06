@@ -1,7 +1,7 @@
 #!/bin/bash
 
 if [ -z "$PGVER" ] ;  then
-    PGVER="17"
+    PGVER="18"
 fi
 
 if [ -z "$(ls /pg_lab)" ] ; then

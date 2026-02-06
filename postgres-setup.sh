@@ -15,8 +15,8 @@ set -e  # exit on error
 
 WD=$(pwd)
 USER=$(whoami)
-PG_VER_PRETTY=17
-PG_VERSION=REL_17_STABLE
+PG_VER_PRETTY=18
+PG_VERSION=REL_18_pglab
 PG_SRC_DIR="$WD/pg-source"
 PG_TARGET_DIR="$WD/pg-build"
 FORCE_TARGET_DIR="false"
@@ -36,7 +36,7 @@ show_help() {
     echo -e "Usage: $0 <options>"
     echo -e "Setup a local Postgres server with the given options. The default user is the current UNIX username.\n"
     echo -e "Allowed options:"
-    echo -e "--pg-ver <version>\t\tSetup Postgres with the given version.${NEWLINE}Currently allowed values: 16, 17 (default))"
+    echo -e "--pg-ver <version>\t\tSetup Postgres with the given version.${NEWLINE}Currently allowed values: 16, 17, 18 (default))"
     echo -e "-d | --dir <directory>\t\tInstall Postgres server to the designated directory (pg-build by default)."
     echo -e "-p | --port <port number>\tConfigure the Postgres server to listen on the given port (5432 by default)."
     echo -e "--remote-password <password>\tEnable remote access for the current user, based on the given password.${NEWLINE}Remote access is disabled if no password is provided."
@@ -53,11 +53,15 @@ while [ $# -gt 0 ] ; do
             case $2 in
                 16)
                     PG_VER_PRETTY="16"
-                    PG_VERSION=REL_16_STABLE
+                    PG_VERSION=REL_16_pglab
                     ;;
                 17)
                     PG_VER_PRETTY="17"
-                    PG_VERSION=REL_17_STABLE
+                    PG_VERSION=REL_17_pglab
+                    ;;
+                18)
+                    PG_VER_PRETTY="18"
+                    PG_VERSION=REL_18_pglab
                     ;;
                 *)
                     show_help
@@ -196,15 +200,15 @@ PGLAB_DIR=$WD/extensions/pg_lab
 mkdir -p $PGLAB_DIR/build && cd $PGLAB_DIR/build
 
 if [ "$DEBUG_BUILD" = "true" ] ; then
-    cmake -DCMAKE_BUILD_TYPE=Debug -DPG_INSTALL_DIR="$PG_TARGET_DIR" ..
+    cmake -DCMAKE_BUILD_TYPE=Debug ..
 else
-    cmake -DCMAKE_BUILD_TYPE=Release -DPG_INSTALL_DIR="$PG_TARGET_DIR" ..
+    cmake -DCMAKE_BUILD_TYPE=Release ..
 fi
-make -j $MAKE_CORES
+make clean && make -j $MAKE_CORES
 
 echo ".. Installing pg_temperature extension"
 cd $WD/extensions/pg_temperature
-make && make install
+make clean && make && make install
 
 echo ".. Initializing Postgres Server environment"
 cd $PG_TARGET_DIR
