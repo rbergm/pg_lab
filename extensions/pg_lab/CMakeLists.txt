@@ -88,12 +88,6 @@ antlr_target(HintBlockGrammar HintBlock.g4 BOTH LISTENER PACKAGE pg_lab)
 # Project config
 #
 
-if(APPLE)
-    set_target_properties(pg_lab PROPERTIES
-        LINK_FLAGS "-Wl,-undefined,dynamic_lookup -Wl,-flat_namespace"
-    )
-endif()
-
 add_library(pg_lab MODULE
     src/pg_lab.cc
     src/hints.cc
@@ -111,6 +105,12 @@ target_include_directories(pg_lab PRIVATE
 )
 
 target_link_libraries(pg_lab PRIVATE antlr4_static)
+
+if(APPLE)
+    set_target_properties(pg_lab PROPERTIES
+        LINK_FLAGS "-Wl,-undefined,dynamic_lookup -Wl,-flat_namespace"
+    )
+endif()
 
 add_custom_command(TARGET pg_lab POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy
