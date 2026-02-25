@@ -10,6 +10,27 @@ To view the changelog of older versions, please refer to the [HISTORY.md](HISTOR
 
 ---
 
+# Version 0.5.1
+
+## 🐣 New features
+- The Docker setup now supports initializing commonly-used datasets such as JOB/IMDB, Stats and Stack by passing additional
+  `--env` variables to the `docker run` command, e.g. `--env SETUP_JOB=true`.
+
+## 💀 Breaking changes
+- _None_
+
+## 📰 Updates
+- _None_
+
+## 🏥 Fixes
+- _None_
+
+## 🪲 Known bugs
+- _None_
+
+---
+
+
 # Version 0.5.0
 
 ## 🐣 New features

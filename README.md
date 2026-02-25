@@ -43,13 +43,15 @@ sudo apt install -y \
 For the **Docker installation**, use the following:
 
 ```sh
-docker build -t pg_lab --build-arg TIMEZONE=$(cat /etc/timezone) --build-arg PG_VER=18 .
+docker build -t pg_lab --build-arg TIMEZONE=$(cat /etc/timezone) .
 
-docker run -d --name pg_lab -p 5432:5432 --volume $PWD/docker-volume:/pg_lab pg_lab
+docker run -d --name pg_lab -p 5432:5432 --volume $PWD/docker-volume:/pg_lab --env PGVER=18 pg_lab
 
 docker exec -it pg_lab /bin/bash
 ```
 
+You can also setup commonly-used databases such as IMDB/JOB, Stats or Stack by passing another `--env` variable to the
+`docker run` command, e.g. `--env SETUP_JOB=true`.
 See the [Installation](docs/installation.md) documentation for more details on installation (including on other systems)
 and usage of pg_lab.
 

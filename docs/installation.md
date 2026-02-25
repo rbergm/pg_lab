@@ -104,6 +104,9 @@ When creating the pg_lab container, you can pass most of the settings that the *
 | `TIMEZONE` | The timezone of the server. Defaults to *UTC*. | *UTC* |
 | `PGVER` | The Postgres server version to use. Currently, pg_lab supports PG 16, 17, and 18. | 18 |
 | `DEBUG` | Whether a debug build should be used. Allowed values are *true* and *false*. | *false* |
+| `SETUP_JOB` | Whether the JOB/IMDB dataset should be setup during installation. Allowed values are *true* and *false*. | *false* |
+| `SETUP_STATS` | Whether the Stats dataset should be setup during installation. Allowed values are *true* and *false*. | *false* |
+| `SETUP_STACK` | Whether the Stack dataset should be setup during installation. Allowed values are *true* and *false*. | *false* |
 
 The image exposes the default Postgres port `5432`.
 Don't forget to bind to it when creating the container if you want to directly connect to the server.
