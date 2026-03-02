@@ -3,6 +3,7 @@
 Currently, we provide two ways to setup a new pg_lab instance: as a local Postgres server, or within a Docker container.
 Both are described below.
 
+
 ## Local installation
 
 pg_lab can be installed as a local Postgres system, without interfering with global paths.
@@ -69,6 +70,7 @@ in, **postgres-load-env.sh** takes care of all necessary modifications of your P
 Therefore, this script also has to be sourced.
 Use `--help` to view all supported options.
 
+
 ## Docker
 
 If you don't want to install pg_lab locally, we also supply a Dockerfile for a containerized setup.
@@ -117,3 +119,14 @@ Setting the shared memory to a large enough value is important for Postgres' day
 for the page cache. It is generally recommended to set it so 1/4 of your system's RAM or more.
 
 Once you have your container up and running, the shell will have all paths already set up properly.
+
+
+## Enabling Remote Access
+
+To allow external connections to your pg_lab instance, you need to set a remote password via the `--remote-password` option of
+the *postgres-setup.sh* script. The script uses the presence of this parameter as an indicator to modify all necessary
+configuration files (like `pg_hba.conf` and `postgresql.conf`) to allow remote access. Access will be granted to the current
+user from any host.
+
+If you want to allow remote access after the fact, or if you need more fine-grained control over the access settings, you need
+to modify the configuration files yourself. Note that the Docker-based setup always allows remote access.
