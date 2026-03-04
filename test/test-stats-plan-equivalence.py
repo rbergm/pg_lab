@@ -10,6 +10,7 @@ from typing import Optional
 
 import psycopg
 
+from . import core
 
 DB_NAME = "stats-test"
 
@@ -46,13 +47,6 @@ def _explain_plan(query: str, cur: psycopg.Cursor) -> dict:
     return plan_json["Plan"]
 
 
-def _relname(plan: dict) -> Optional[str]:
-    alias = plan.get("Alias")
-    if alias is not None:
-        return alias
-    return plan.get("Relation Name")
-
-
 def _build_intermediates(plan: dict) -> None:
     if plan["Node Type"] in [
         "Seq Scan",
@@ -60,7 +54,7 @@ def _build_intermediates(plan: dict) -> None:
         "Index Only Scan",
         "Bitmap Heap Scan",
     ]:
-        intermediate = _relname(plan)
+        intermediate = core.relname(plan)
         plan["Intermediates"] = [intermediate]
     else:
         intermediates = [
@@ -77,7 +71,7 @@ def _determine_join_order(plan: dict) -> str:
         "Index Only Scan",
         "Bitmap Heap Scan",
     ]:
-        return _relname(plan)
+        return core.relname(plan)
 
     nested = [_determine_join_order(subplan) for subplan in plan.get("Plans", [])]
     match nested:
@@ -154,7 +148,7 @@ def _extract_hint_set(plan: dict, *, plan_mode: str) -> str:
     return "\n".join(hints)
 
 
-class TestFullPlanHinting(unittest.TestCase):
+class TestFullPlanHinting(core.PostgresTestCase):
     def __init__(
         self, methodName: str = "runTest", *, queries: Optional[set[str]] = None
     ) -> None:
@@ -169,26 +163,6 @@ class TestFullPlanHinting(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.conn.close()
-
-    def assertPlansEqual(self, plan1: dict, plan2: dict, msg: str = "") -> None:
-        if plan1["Node Type"] != plan2["Node Type"]:
-            self.fail(
-                f"{msg}\nDifferent operators: {plan1['Node Type']} != {plan2['Node Type']}"
-            )
-
-        rel1 = _relname(plan1)
-        rel2 = _relname(plan2)
-        if rel1 != rel2:
-            self.fail(f"{msg}\nScanning different relations: {plan1} != {plan2}")
-
-        childs1 = plan1.get("Plans", [])
-        childs2 = plan2.get("Plans", [])
-        if len(childs1) != len(childs2):
-            self.fail(
-                f"{msg}\nNumber of child plans differ: {len(childs1)} != {len(childs2)}"
-            )
-        for child1, child2 in zip(childs1, childs2):
-            self.assertPlansEqual(child1, child2, msg=msg)
 
     def test_plan_equivalence(self) -> None:
         for label, query in self.workload.items():
@@ -224,7 +198,7 @@ class TestFullPlanHinting(unittest.TestCase):
             )
 
 
-class CardinalityHintingTests(unittest.TestCase):
+class CardinalityHintingTests(core.PostgresTestCase):
     def setUp(self) -> None:
         _init_db()
         self.conn = psycopg.connect(dbname=DB_NAME, host="localhost")
@@ -250,7 +224,9 @@ class CardinalityHintingTests(unittest.TestCase):
         with self.conn.cursor() as cur:
             self._check_query(query, card=target_card, intermediate="p u", cur=cur)
 
-    def _check_query(self, query: str, *, card: int, intermediate: str, cur: psycopg.Cursor) -> None:
+    def _check_query(
+        self, query: str, *, card: int, intermediate: str, cur: psycopg.Cursor
+    ) -> None:
         native_plan = _explain_plan(query, cur)
         native_cardinality = native_plan["Plan Rows"]
 
@@ -283,7 +259,12 @@ if __name__ == "__main__":
         description=description,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--queries", "-q", nargs="*", help="Only runs the full plan hinting test with these specific queries")
+    parser.add_argument(
+        "--queries",
+        "-q",
+        nargs="*",
+        help="Only runs the full plan hinting test with these specific queries",
+    )
 
     args = parser.parse_args()
     test_queries = set(args.queries) if args.queries else None

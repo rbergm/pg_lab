@@ -689,7 +689,7 @@ path_satisfies_joinorder(Path *path, JoinOrder *join_order, OperatorHint **op_hi
  * 2. for joins, that the inner input uses materialization/memoization correctly
  */
 static bool
-path_satisfies_operators(PlannerHints *hints, Path *path, OperatorHint *op_hint)
+path_satisfies_operators(PlannerHints *hints, Path *path, OperatorHint *op_hint, Path *competitor, bool accept_components)
 {
     Relids           relids;
     JoinPath        *jpath;
@@ -728,90 +728,90 @@ path_satisfies_operators(PlannerHints *hints, Path *path, OperatorHint *op_hint)
         {
             MaterialPath *mpath;
             mpath = (MaterialPath *) path;
-            return path_satisfies_operators(hints, mpath->subpath, op_hint);
+            return path_satisfies_operators(hints, mpath->subpath, op_hint, competitor, accept_components);
         }
         case T_Memoize:
         {
             MemoizePath *mpath;
             mpath = (MemoizePath *) path;
-            return path_satisfies_operators(hints, mpath->subpath, op_hint);
+            return path_satisfies_operators(hints, mpath->subpath, op_hint, competitor, accept_components);
         }
         case T_Gather:
         {
             GatherPath *gpath;
             gpath = (GatherPath *) path;
-            return path_satisfies_operators(hints, gpath->subpath, op_hint);
+            return path_satisfies_operators(hints, gpath->subpath, op_hint, competitor, accept_components);
         }
         case T_GatherMerge:
         {
             GatherMergePath *gmpath;
             gmpath = (GatherMergePath *) path;
-            return path_satisfies_operators(hints, gmpath->subpath, op_hint);
+            return path_satisfies_operators(hints, gmpath->subpath, op_hint, competitor, accept_components);
         }
         case T_Unique:
         {
             UniquePath *upath;
             upath = (UniquePath *) path;
-            return path_satisfies_operators(hints, upath->subpath, op_hint);
+            return path_satisfies_operators(hints, upath->subpath, op_hint, competitor, accept_components);
         }
         case T_ProjectSet:
         {
             ProjectSetPath *ppath;
             ppath = (ProjectSetPath *) path;
-            return path_satisfies_operators(hints, ppath->subpath, op_hint);
+            return path_satisfies_operators(hints, ppath->subpath, op_hint, competitor, accept_components);
         }
         case T_Sort:
         {
             SortPath *spath;
             spath = (SortPath *) path;
-            return path_satisfies_operators(hints, spath->subpath, op_hint);
+            return path_satisfies_operators(hints, spath->subpath, op_hint, competitor, accept_components);
         }
         case T_IncrementalSort:
         {
             IncrementalSortPath *ispath;
             ispath = (IncrementalSortPath *) path;
-            return path_satisfies_operators(hints, ispath->spath.subpath, op_hint);
+            return path_satisfies_operators(hints, ispath->spath.subpath, op_hint, competitor, accept_components);
         }
         case T_Group:
         {
             GroupPath *gpath;
             gpath = (GroupPath *) path;
-            return path_satisfies_operators(hints, gpath->subpath, op_hint);
+            return path_satisfies_operators(hints, gpath->subpath, op_hint, competitor, accept_components);
         }
         case T_Agg:
         {
             AggPath *apath;
             apath = (AggPath *) path;
-            return path_satisfies_operators(hints, apath->subpath, op_hint);
+            return path_satisfies_operators(hints, apath->subpath, op_hint, competitor, accept_components);
         }
         case T_GroupingSet:
         {
             GroupingSetsPath *gspath;
             gspath = (GroupingSetsPath *) path;
-            return path_satisfies_operators(hints, gspath->subpath, op_hint);
+            return path_satisfies_operators(hints, gspath->subpath, op_hint, competitor, accept_components);
         }
         case T_WindowAgg:
         {
             WindowAggPath *wpath;
             wpath = (WindowAggPath *) path;
-            return path_satisfies_operators(hints, wpath->subpath, op_hint);
+            return path_satisfies_operators(hints, wpath->subpath, op_hint, competitor, accept_components);
         }
         case T_SetOp:
         {
             SetOpPath *spath;
             spath = (SetOpPath *) path;
             #if PG_VERSION_NUM >= 180000
-            return path_satisfies_operators(hints, spath->leftpath, op_hint)
-                    && path_satisfies_operators(hints, spath->rightpath, op_hint);
+            return path_satisfies_operators(hints, spath->leftpath, op_hint, competitor, accept_components)
+                    && path_satisfies_operators(hints, spath->rightpath, op_hint, competitor, accept_components);
             #else
-            return path_satisfies_operators(hints, spath->subpath, op_hint);
+            return path_satisfies_operators(hints, spath->subpath, op_hint, competitor, accept_components);
             #endif
         }
         case T_Limit:
         {
             LimitPath *lpath;
             lpath = (LimitPath *) path;
-            return path_satisfies_operators(hints, lpath->subpath, op_hint);
+            return path_satisfies_operators(hints, lpath->subpath, op_hint, competitor, accept_components);
         }
         case T_Result:
         {
@@ -821,7 +821,7 @@ path_satisfies_operators(PlannerHints *hints, Path *path, OperatorHint *op_hint)
                 {
                     ProjectionPath *ppath;
                     ppath = (ProjectionPath *) path;
-                    return path_satisfies_operators(hints, ppath->subpath, op_hint);
+                    return path_satisfies_operators(hints, ppath->subpath, op_hint, competitor, accept_components);
                 }
                 case T_GroupResultPath:
                 case T_MinMaxAggPath:
@@ -872,8 +872,18 @@ path_satisfies_operators(PlannerHints *hints, Path *path, OperatorHint *op_hint)
             return false;
         else if (requested_op == OP_IDXSCAN && !(PathIsA(path, IndexScan) || PathIsA(path, IndexOnlyScan)))
             return false;
-        else if (requested_op == OP_BITMAPSCAN && !PathIsA(path, BitmapHeapScan))
-            return false;
+        else if (requested_op == OP_BITMAPSCAN)
+        {
+            if (!accept_components)
+                return PathIsA(path, BitmapHeapScan);
+
+            if (PathIsA(path, BitmapHeapScan))
+                return true;
+            else if (PathIsA(path, IndexScan) || PathIsA(path, IndexOnlyScan))
+                return !competitor || !PathIsA(competitor, BitmapHeapScan);
+            else
+                return false;
+        }
         else if (requested_op == OP_NESTLOOP && !PathIsA(path, NestLoop))
             return false;
         else if (requested_op == OP_HASHJOIN && !PathIsA(path, HashJoin))
@@ -1425,9 +1435,10 @@ path_satisfies_joinprefixes(Path *path, List *prefixes)
 
 
 static bool
-check_path_recursive(PlannerHints *hints, Path *path, bool is_partial)
+check_path_recursive(PlannerHints *hints, Path *path, bool is_partial, Path *competitor, bool final_path)
 {
     OperatorHint *op_hint;
+    const char *path_type;
 
     /*
      * TODO: the current implementation is incredibly inefficient.
@@ -1436,22 +1447,24 @@ check_path_recursive(PlannerHints *hints, Path *path, bool is_partial)
 
     check_stack_depth();
 
+    path_type = is_partial ? "partial" : "plain";
+
     if (!path_satisfies_joinprefixes(path, hints->join_prefixes))
     {
-        pglab_trace("Check failed for path %s - does not satisfy join prefixes", path_to_string(path));
+        pglab_trace("Check failed for %s path %s - does not satisfy join prefixes", path_type, path_to_string(path));
         return false;
     }
 
     op_hint = NULL;
     if (!path_satisfies_joinorder(path, hints->join_order_hint, &op_hint))
     {
-        pglab_trace("Check failed for path %s - does not satisfy join order", path_to_string(path));
+        pglab_trace("Check failed for %s path %s - does not satisfy join order", path_type, path_to_string(path));
         return false;
     }
 
-    if (!path_satisfies_operators(hints, path, op_hint))
+    if (!path_satisfies_operators(hints, path, op_hint, competitor, !final_path))
     {
-        pglab_trace("Check failed for path %s - does not satisfy operator hints", path_to_string(path));
+        pglab_trace("Check failed for %s path %s - does not satisfy operator hints", path_type, path_to_string(path));
         return false;
     }
 
@@ -1459,7 +1472,8 @@ check_path_recursive(PlannerHints *hints, Path *path, bool is_partial)
     {
         if (!partial_path_satisfies_parallelization(hints, path))
         {
-            pglab_trace("Check failed for path %s - does not satisfy parallelization hints", path_to_string(path));
+            pglab_trace("Check failed for %s path %s - does not satisfy parallelization hints",
+                        path_type, path_to_string(path));
             return false;
         }
     }
@@ -1467,7 +1481,8 @@ check_path_recursive(PlannerHints *hints, Path *path, bool is_partial)
     {
         if (!path_satisfies_parallelization(hints, path))
         {
-            pglab_trace("Check failed for path %s - does not satisfy parallelization hints", path_to_string(path));
+            pglab_trace("Check failed for %s path %s - does not satisfy parallelization hints",
+                        path_type, path_to_string(path));
             return false;
         }
     }
@@ -1501,7 +1516,7 @@ check_path_recursive(PlannerHints *hints, Path *path, bool is_partial)
             foreach(lc, apath->subpaths)
             {
                 Path *subpath = (Path *) lfirst(lc);
-                if (!check_path_recursive(hints, subpath, is_partial))
+                if (!check_path_recursive(hints, subpath, is_partial, competitor, final_path))
                     return false;
             }
             return true;
@@ -1514,7 +1529,7 @@ check_path_recursive(PlannerHints *hints, Path *path, bool is_partial)
             foreach(lc, mpath->subpaths)
             {
                 Path *subpath = (Path *) lfirst(lc);
-                if (!check_path_recursive(hints, subpath, is_partial))
+                if (!check_path_recursive(hints, subpath, is_partial, competitor, final_path))
                     return false;
             }
             return true;
@@ -1525,7 +1540,7 @@ check_path_recursive(PlannerHints *hints, Path *path, bool is_partial)
         {
             JoinPath *jpath;
             jpath = (JoinPath *) path;
-            if (!check_path_recursive(hints, jpath->outerjoinpath, is_partial))
+            if (!check_path_recursive(hints, jpath->outerjoinpath, is_partial, competitor, final_path))
                 return false;
 
             /*
@@ -1538,7 +1553,7 @@ check_path_recursive(PlannerHints *hints, Path *path, bool is_partial)
              * we simply pass the same is_partial flag to both sides. Now, the check for the inner
              * path (errorneously) assumes that it is part of a partial path, too.
              */
-            if (!check_path_recursive(hints, jpath->innerjoinpath, is_partial))
+            if (!check_path_recursive(hints, jpath->innerjoinpath, is_partial, competitor, final_path))
                 return false;
             return true;
         }
@@ -1546,90 +1561,90 @@ check_path_recursive(PlannerHints *hints, Path *path, bool is_partial)
         {
             MaterialPath *mpath;
             mpath = (MaterialPath *) path;
-            return check_path_recursive(hints, mpath->subpath, is_partial);
+            return check_path_recursive(hints, mpath->subpath, is_partial, competitor, final_path);
         }
         case T_Memoize:
         {
             MemoizePath *mpath;
             mpath = (MemoizePath *) path;
-            return check_path_recursive(hints, mpath->subpath, is_partial);
+            return check_path_recursive(hints, mpath->subpath, is_partial, competitor, final_path);
         }
         case T_Unique:
         {
             UniquePath *upath;
             upath = (UniquePath *) path;
-            return check_path_recursive(hints, upath->subpath, is_partial);
+            return check_path_recursive(hints, upath->subpath, is_partial, competitor, final_path);
         }
         case T_ProjectSet:
         {
             ProjectSetPath *ppath;
             ppath = (ProjectSetPath *) path;
-            return check_path_recursive(hints, ppath->subpath, is_partial);
+            return check_path_recursive(hints, ppath->subpath, is_partial, competitor, final_path);
         }
         case T_Sort:
         {
             SortPath *spath;
             spath = (SortPath *) path;
-            return check_path_recursive(hints, spath->subpath, is_partial);
+            return check_path_recursive(hints, spath->subpath, is_partial, competitor, final_path);
         }
         case T_IncrementalSort:
         {
             IncrementalSortPath *ispath;
             ispath = (IncrementalSortPath *) path;
-            return check_path_recursive(hints, ispath->spath.subpath, is_partial);
+            return check_path_recursive(hints, ispath->spath.subpath, is_partial, competitor, final_path);
         }
         case T_Group:
         {
             GroupPath *gpath;
             gpath = (GroupPath *) path;
-            return check_path_recursive(hints, gpath->subpath, is_partial);
+            return check_path_recursive(hints, gpath->subpath, is_partial, competitor, final_path);
         }
         case T_Agg:
         {
             AggPath *apath;
             apath = (AggPath *) path;
-            return check_path_recursive(hints, apath->subpath, is_partial);
+            return check_path_recursive(hints, apath->subpath, is_partial, competitor, final_path);
         }
         case T_GroupingSet:
         {
             GroupingSetsPath *gspath;
             gspath = (GroupingSetsPath *) path;
-            return check_path_recursive(hints, gspath->subpath, is_partial);
+            return check_path_recursive(hints, gspath->subpath, is_partial, competitor, final_path);
         }
         case T_WindowAgg:
         {
             WindowAggPath *wpath;
             wpath = (WindowAggPath *) path;
-            return check_path_recursive(hints, wpath->subpath, is_partial);
+            return check_path_recursive(hints, wpath->subpath, is_partial, competitor, final_path);
         }
         case T_SetOp:
         {
             SetOpPath *spath;
             spath = (SetOpPath *) path;
             #if PG_VERSION_NUM >= 180000
-            return check_path_recursive(hints, spath->leftpath, is_partial)
-                    && check_path_recursive(hints, spath->rightpath, is_partial);
+            return check_path_recursive(hints, spath->leftpath, is_partial, competitor, final_path)
+                    && check_path_recursive(hints, spath->rightpath, is_partial, competitor, final_path);
             #else
-            return check_path_recursive(hints, spath->subpath, is_partial);
+            return check_path_recursive(hints, spath->subpath, is_partial, competitor, final_path);
             #endif
         }
         case T_Limit:
         {
             LimitPath *lpath;
             lpath = (LimitPath *) path;
-            return check_path_recursive(hints, lpath->subpath, is_partial);
+            return check_path_recursive(hints, lpath->subpath, is_partial, competitor, final_path);
         }
         case T_Gather:
         {
             GatherPath *gpath;
             gpath = (GatherPath *) path;
-            return check_path_recursive(hints, gpath->subpath, true);
+            return check_path_recursive(hints, gpath->subpath, true, competitor, final_path);
         }
         case T_GatherMerge:
         {
             GatherMergePath *gmpath;
             gmpath = (GatherMergePath *) path;
-            return check_path_recursive(hints, gmpath->subpath, true);
+            return check_path_recursive(hints, gmpath->subpath, true, competitor, final_path);
         }
         case T_Result:
         {
@@ -1639,7 +1654,7 @@ check_path_recursive(PlannerHints *hints, Path *path, bool is_partial)
                 {
                     ProjectionPath *ppath;
                     ppath = (ProjectionPath *) path;
-                    return check_path_recursive(hints, ppath->subpath, is_partial);
+                    return check_path_recursive(hints, ppath->subpath, is_partial, competitor, final_path);
                 }
                 case T_GroupResultPath:
                 case T_MinMaxAggPath:
@@ -1766,7 +1781,7 @@ hint_aware_final_path_callback(PlannerInfo *root, RelOptInfo *rel, Path *best_pa
     if (current_hints && current_hints->contains_hint)
     {
         if (pglab_check_final_path &&
-            !check_path_recursive(current_hints, best_path, false))
+            !check_path_recursive(current_hints, best_path, false, NULL, true))
             ereport(ERROR,
                     errmsg("pg_lab could not find a valid path that satisfies all hints."),
                     errdetail("Final path was %s", path_to_string(best_path)),
@@ -1875,6 +1890,7 @@ void
 hint_aware_add_path(RelOptInfo *parent_rel, Path *path)
 {
     OperatorHint *op_hint;
+    ListCell *lc;
 
     CHECK_FOR_INTERRUPTS();
     if (!current_hints || !current_hints->contains_hint)
@@ -1905,7 +1921,7 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *path)
         return;
     }
 
-    if (!path_satisfies_operators(current_hints, path, op_hint))
+    if (!path_satisfies_operators(current_hints, path, op_hint, NULL, true))
     {
         pglab_trace("Rejecting path %s - does not satisfy operator hints", path_to_string(path));
         evict_path(path, false);
@@ -1933,16 +1949,15 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *path)
      * We basically check, if the existing path satisfies all hints. If it does not, we evict it.
      */
 
-    if (list_length(parent_rel->pathlist) == 1)
+    foreach (lc, parent_rel->pathlist)
     {
-        Path *placeholder;
-        placeholder = (Path *) linitial(parent_rel->pathlist);
-        if (!check_path_recursive(current_hints, placeholder, false))
-        {
-            pglab_trace("Evicting placeholder path %s", path_to_string(placeholder));
-            parent_rel->pathlist = list_delete_first(parent_rel->pathlist);
-            evict_path(placeholder, false);
-        }
+        Path *placeholder = (Path *) lfirst(lc);
+        if (check_path_recursive(current_hints, placeholder, false, path, false))
+            continue;
+
+        pglab_trace("Evicting placeholder path %s", path_to_string(placeholder));
+        evict_path(placeholder, false);
+        parent_rel->pathlist = foreach_delete_current(parent_rel->pathlist, lc);
     }
 
     pglab_trace("Accepting path %s", path_to_string(path));
@@ -1953,6 +1968,7 @@ void
 hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *path)
 {
     OperatorHint *op_hint;
+    ListCell *lc;
 
     CHECK_FOR_INTERRUPTS();
     if (!current_hints || !current_hints->contains_hint)
@@ -1976,7 +1992,7 @@ hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *path)
         return;
     }
 
-    if (!path_satisfies_operators(current_hints, path, op_hint))
+    if (!path_satisfies_operators(current_hints, path, op_hint, NULL, true))
     {
         pglab_trace("Rejecting partial path %s - does not satisfy operator hints", path_to_string(path));
         evict_path(path, true);
@@ -1988,6 +2004,17 @@ hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *path)
         pglab_trace("Rejecting partial path %s - does not satisfy parallelization hints", path_to_string(path));
         evict_path(path, true);
         return;
+    }
+
+    foreach (lc, parent_rel->partial_pathlist)
+    {
+        Path *placeholder = (Path *) lfirst(lc);
+        if (check_path_recursive(current_hints, placeholder, true, path, false))
+            continue;
+
+        pglab_trace("Evicting partial placeholder path %s", path_to_string(placeholder));
+        evict_path(placeholder, true);
+        parent_rel->partial_pathlist = foreach_delete_current(parent_rel->partial_pathlist, lc);
     }
 
     pglab_trace("Accepting partial path %s", path_to_string(path));
