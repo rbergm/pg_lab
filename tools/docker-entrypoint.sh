@@ -20,7 +20,7 @@ if [ -z "$(ls /pg_lab)" ] ; then
     cd /pg_lab/
     source ./postgres-start.sh
 
-    if [ "$SETUP_JOB" = "true" ] ; then
+    if [ "$SETUP_JOB" = "true" ] | [ "$SETUP_IMDB" = "true" ] ; then
         echo "[setup] Setting up JOB/IMDB database"
         wget https://raw.githubusercontent.com/rbergm/PostBOUND/refs/heads/main/db-support/postgres/workload-job-setup.sh -O /pg_lab/workload-job-setup.sh
         chmod +x /pg_lab/workload-job-setup.sh
