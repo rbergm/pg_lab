@@ -147,6 +147,18 @@ extern TempGUC **guc_cleanup_actions;
 extern int n_cleanup_actions;
 
 
+typedef struct PGLabContext
+{
+    Cost max_valid_cost;
+    List *invalid_paths;
+} PGLabContext;
+
+typedef struct PGLabPathInfo
+{
+    bool valid;
+    Cost original_cost;
+} PGLabPathInfo;
+
 static bool enable_pglab = true;
 static bool pglab_check_final_path = true;
 static bool trace_pruning = false;
@@ -490,6 +502,237 @@ path_to_string(Path *path)
     }
 
     return buf->data;
+}
+
+static bool path_has_valid_children(Path *path)
+{
+    /*
+     * This is standard path-based switch/case with a twist:
+     * We need to explicitly check for != NULL b/c some paths are added without going through add_path(),
+     * e.g. Memoize. For these, we cannot attach the PathInfo since this happens in add_path()
+     * This is not a limitation, because we use the underlying node to store memoization info. We just need
+     * to be a bit careful here..
+     */
+
+    switch (path->pathtype)
+    {
+        case T_SeqScan:
+        case T_IndexScan:
+        case T_IndexOnlyScan:
+        case T_BitmapHeapScan:
+        case T_TidScan:
+        case T_SubqueryScan:
+        case T_FunctionScan:
+        case T_ValuesScan:
+        case T_CteScan:
+        case T_ForeignScan:
+            return true;
+
+        case T_NestLoop:
+        case T_MergeJoin:
+        case T_HashJoin:
+        {
+            JoinPath *jpath = (JoinPath *) path;
+            PGLabPathInfo *outer_info, *inner_info;
+            bool outer_valid, inner_valid;
+
+            outer_info = (PGLabPathInfo *) jpath->outerjoinpath->pglab_private;
+            inner_info = (PGLabPathInfo *) jpath->innerjoinpath->pglab_private;
+
+            outer_valid = outer_info != NULL ? outer_info->valid : path_has_valid_children(jpath->outerjoinpath);
+            inner_valid = inner_info != NULL ? inner_info->valid : path_has_valid_children(jpath->innerjoinpath);
+
+            return outer_valid && inner_valid;
+        }
+
+        case T_Append:
+        {
+            AppendPath *apath;
+            ListCell *lc;
+            apath = (AppendPath *) path;
+            foreach(lc, apath->subpaths)
+            {
+                Path *subpath = (Path *) lfirst(lc);
+                PGLabPathInfo *subpath_info = (PGLabPathInfo *) subpath->pglab_private;
+                if (subpath_info && !subpath_info->valid)
+                    return false;
+                else if (subpath_info == NULL && !path_has_valid_children(subpath))
+                    return false;
+            }
+            return true;
+        }
+        case T_MergeAppend:
+        {
+            MergeAppendPath *mapath;
+            ListCell *lc;
+            mapath = (MergeAppendPath *) path;
+            foreach(lc, mapath->subpaths)
+            {
+                Path *subpath = (Path *) lfirst(lc);
+                PGLabPathInfo *subpath_info = (PGLabPathInfo *) subpath->pglab_private;
+                if (subpath_info && !subpath_info->valid)
+                    return false;
+                else if (subpath_info == NULL && !path_has_valid_children(subpath))
+                    return false;
+            }
+            return true;
+        }
+        case T_Material:
+        {
+            MaterialPath *mpath;
+            PGLabPathInfo *subpath_info;
+            mpath = (MaterialPath *) path;
+            subpath_info = (PGLabPathInfo *) mpath->subpath->pglab_private;
+            return subpath_info != NULL ? subpath_info->valid : path_has_valid_children(mpath->subpath);
+        }
+        case T_Memoize:
+        {
+            MemoizePath *mpath;
+            PGLabPathInfo *subpath_info;
+            mpath = (MemoizePath *) path;
+            subpath_info = (PGLabPathInfo *) mpath->subpath->pglab_private;
+            return subpath_info != NULL ? subpath_info->valid : path_has_valid_children(mpath->subpath);
+        }
+        case T_Unique:
+        {
+            UniquePath *upath;
+            PGLabPathInfo *subpath_info;
+            upath = (UniquePath *) path;
+            subpath_info = (PGLabPathInfo *) upath->subpath->pglab_private;
+            return subpath_info != NULL ? subpath_info->valid : path_has_valid_children(upath->subpath);
+        }
+        case T_ProjectSet:
+        {
+            ProjectSetPath *ppath;
+            PGLabPathInfo *subpath_info;
+            ppath = (ProjectSetPath *) path;
+            subpath_info = (PGLabPathInfo *) ppath->subpath->pglab_private;
+            return subpath_info != NULL ? subpath_info->valid : path_has_valid_children(ppath->subpath);
+        }
+        case T_Sort:
+        {
+            SortPath *spath;
+            PGLabPathInfo *subpath_info;
+            spath = (SortPath *) path;
+            subpath_info = (PGLabPathInfo *) spath->subpath->pglab_private;
+            return subpath_info != NULL ? subpath_info->valid : path_has_valid_children(spath->subpath);
+        }
+        case T_IncrementalSort:
+        {
+            IncrementalSortPath *ispath;
+            PGLabPathInfo *subpath_info;
+            ispath = (IncrementalSortPath *) path;
+            subpath_info = (PGLabPathInfo *) ispath->spath.subpath->pglab_private;
+            return subpath_info != NULL ? subpath_info->valid : path_has_valid_children(ispath->spath.subpath);
+        }
+        case T_Group:
+        {
+            GroupPath *gpath;
+            PGLabPathInfo *subpath_info;
+            gpath = (GroupPath *) path;
+            subpath_info = (PGLabPathInfo *) gpath->subpath->pglab_private;
+            return subpath_info != NULL ? subpath_info->valid : path_has_valid_children(gpath->subpath);
+        }
+        case T_Agg:
+        {
+            AggPath *apath;
+            PGLabPathInfo *subpath_info;
+            apath = (AggPath *) path;
+            subpath_info = (PGLabPathInfo *) apath->subpath->pglab_private;
+            return subpath_info != NULL ? subpath_info->valid : path_has_valid_children(apath->subpath);
+        }
+        case T_GroupingSet:
+        {
+            GroupingSetsPath *gspath;
+            PGLabPathInfo *subpath_info;
+            gspath = (GroupingSetsPath *) path;
+            subpath_info = (PGLabPathInfo *) gspath->subpath->pglab_private;
+            return subpath_info != NULL ? subpath_info->valid : path_has_valid_children(gspath->subpath);
+        }
+        case T_WindowAgg:
+        {
+            WindowAggPath *wpath;
+            PGLabPathInfo *subpath_info;
+            wpath = (WindowAggPath *) path;
+            subpath_info = (PGLabPathInfo *) wpath->subpath->pglab_private;
+            return subpath_info != NULL ? subpath_info->valid : path_has_valid_children(wpath->subpath);
+        }
+        case T_SetOp:
+        {
+            SetOpPath *spath;
+            #if PG_VERSION_NUM >= 180000
+            PGLabPathInfo *left_info, *right_info;
+            spath = (SetOpPath *) path;
+            left_info = (PGLabPathInfo *) spath->leftpath->pglab_private;
+            right_info = (PGLabPathInfo *) spath->rightpath->pglab_private;
+            if (left_info != NULL && !left_info->valid)
+                return false;
+            else if (left_info == NULL && !path_has_valid_children(spath->leftpath))
+                return false;
+            if (right_info != NULL && !right_info->valid)
+                return false;
+            else if (right_info == NULL && !path_has_valid_children(spath->rightpath))
+                return false;
+            return true;
+            #else
+            PGLabPathInfo *subpath_info;
+            spath = (SetOpPath *) path;
+            subpath_info = (PGLabPathInfo *) spath->subpath->pglab_private;
+            return subpath_info != NULL ? subpath_info->valid : path_has_valid_children(spath->subpath);
+            #endif
+        }
+        case T_Limit:
+        {
+            LimitPath *lpath;
+            PGLabPathInfo *subpath_info;
+            lpath = (LimitPath *) path;
+            subpath_info = (PGLabPathInfo *) lpath->subpath->pglab_private;
+            return subpath_info != NULL ? subpath_info->valid : path_has_valid_children(lpath->subpath);
+        }
+        case T_Gather:
+        {
+            GatherPath *gpath;
+            PGLabPathInfo *subpath_info;
+            gpath = (GatherPath *) path;
+            subpath_info = (PGLabPathInfo *) gpath->subpath->pglab_private;
+            return subpath_info != NULL ? subpath_info->valid : path_has_valid_children(gpath->subpath);
+        }
+        case T_GatherMerge:
+        {
+            GatherMergePath *gmpath;
+            PGLabPathInfo *subpath_info;
+            gmpath = (GatherMergePath *) path;
+            subpath_info = (PGLabPathInfo *) gmpath->subpath->pglab_private;
+            return subpath_info != NULL ? subpath_info->valid : path_has_valid_children(gmpath->subpath);
+        }
+        case T_Result:
+        {
+            switch (path->type)
+            {
+                case T_ProjectionPath:
+                {
+                    ProjectionPath *ppath;
+                    PGLabPathInfo *subpath_info;
+                    ppath = (ProjectionPath *) path;
+                    subpath_info = (PGLabPathInfo *) ppath->subpath->pglab_private;
+                    return subpath_info != NULL ? subpath_info->valid : path_has_valid_children(ppath->subpath);
+                }
+                case T_MinMaxAggPath:
+                case T_GroupResultPath:
+                case T_Path:  /* this is a ResultScan */
+                    /* these paths have no further children */
+                    return true;
+                default:
+                    elog(WARNING, "pg_lab: path_to_string: unsupported Result path type %d", path->type);
+                    return false;
+            }
+        }
+        default:
+            elog(WARNING, "pg_lab: path_to_string: unsupported path type %d", path->pathtype);
+            return false;
+    }
+
+    Assert(false);  /* we should never reach this point */
 }
 
 /*
@@ -1890,7 +2133,12 @@ void
 hint_aware_add_path(RelOptInfo *parent_rel, Path *path)
 {
     OperatorHint *op_hint;
+    bool satisfies_hints;
+    PGLabContext *pglab_ctx;
+    PGLabPathInfo *path_info;
+    List *invalid_paths;
     ListCell *lc;
+    Cost max_valid_cost;
 
     CHECK_FOR_INTERRUPTS();
     if (!current_hints || !current_hints->contains_hint)
@@ -1899,76 +2147,130 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *path)
         return;
     }
 
-    if (parent_rel->pathlist == NIL)
+    satisfies_hints = path_has_valid_children(path);
+    if (!satisfies_hints)
     {
-        pglab_trace("Accepting placeholder path %s", path_to_string(path));
-        PG_ADD_PATH(parent_rel, path);
-        return;
+        pglab_trace("Rejecting path %s - has invalid children", path_to_string(path));
     }
 
-    if (!path_satisfies_joinprefixes(path, current_hints->join_prefixes))
+    if (satisfies_hints && !path_satisfies_joinprefixes(path, current_hints->join_prefixes))
     {
         pglab_trace("Rejecting path %s - does not satisfy join prefixes", path_to_string(path));
-        evict_path(path, false);
-        return;
+        satisfies_hints = false;
     }
 
     op_hint = NULL;
-    if (!path_satisfies_joinorder(path, current_hints->join_order_hint, &op_hint))
+    if (satisfies_hints && !path_satisfies_joinorder(path, current_hints->join_order_hint, &op_hint))
     {
         pglab_trace("Rejecting path %s - does not satisfy join order", path_to_string(path));
-        evict_path(path, false);
-        return;
+        satisfies_hints = false;
     }
 
-    if (!path_satisfies_operators(current_hints, path, op_hint, NULL, true))
+    if (satisfies_hints && !path_satisfies_operators(current_hints, path, op_hint))
     {
         pglab_trace("Rejecting path %s - does not satisfy operator hints", path_to_string(path));
-        evict_path(path, false);
-        return;
+        satisfies_hints = false;
     }
 
-    if (!path_satisfies_parallelization(current_hints, path))
+    if (satisfies_hints && !path_satisfies_parallelization(current_hints, path))
     {
         pglab_trace("Rejecting path %s - does not satisfy parallelization hints", path_to_string(path));
-        evict_path(path, false);
-        return;
+        satisfies_hints = false;
     }
 
-    /*
-     * At this point we will definitely accept the new path. The only remaining question
-     * is whether we need to evict one of the existing paths.
-     * This happens, if we previously accepted a path not because it satisfied the hints, but because
-     * it was the only known path for the relation so far (remember that set_cheapest() errors for empty
-     * pathlists and we therefore always need at least one path).
-     *
-     * This situation may only occur, if there is exactly one path in the pathlist - if there are multiple
-     * paths, these had to pass through hint_aware_add_path() already and survived all checks, including
-     * this eviction logic.
-     *
-     * We basically check, if the existing path satisfies all hints. If it does not, we evict it.
-     */
+    path_info = (PGLabPathInfo *) palloc0(sizeof(PGLabPathInfo));
+    path_info->valid = satisfies_hints;
+    path_info->original_cost = path->total_cost;
+    path->pglab_private = path_info;
+
+    if (satisfies_hints)
+    {
+        invalid_paths = NIL;
+        max_valid_cost = path->total_cost;
+    }
+    else
+    {
+        invalid_paths = list_make1(path);
+        max_valid_cost = 0;
+    }
 
     foreach (lc, parent_rel->pathlist)
     {
-        Path *placeholder = (Path *) lfirst(lc);
-        if (check_path_recursive(current_hints, placeholder, false, path, false))
-            continue;
+        Path *candidate;
+        PGLabPathInfo *candidate_info;
 
-        pglab_trace("Evicting placeholder path %s", path_to_string(placeholder));
-        evict_path(placeholder, false);
-        parent_rel->pathlist = foreach_delete_current(parent_rel->pathlist, lc);
+        candidate = (Path *) lfirst(lc);
+        candidate_info = (PGLabPathInfo *) candidate->pglab_private;
+        Assert(candidate_info != NULL);
+
+        if (candidate_info->valid)
+            max_valid_cost = Max(candidate->total_cost, max_valid_cost);
+        else
+            invalid_paths = lappend(invalid_paths, candidate);
     }
 
-    pglab_trace("Accepting path %s", path_to_string(path));
+    foreach (lc, invalid_paths)
+    {
+        Path *invalid;
+        PGLabPathInfo *invalid_info;
+
+        invalid = (Path *) lfirst(lc);
+        invalid_info = (PGLabPathInfo *) invalid->pglab_private;
+        invalid->total_cost = invalid_info->original_cost + 1.01 * max_valid_cost;
+    }
+
     PG_ADD_PATH(parent_rel, path);
+
+    // pglab_ctx = (PGLabContext *) parent_rel->pglab_private;
+    // if (pglab_ctx == NULL)
+    // {
+    //     pglab_ctx = (PGLabContext *) palloc0(sizeof(PGLabContext));
+    //     pglab_ctx->invalid_paths = NIL;
+    //     pglab_ctx->max_valid_cost = 0;
+    //     parent_rel->pglab_private = pglab_ctx;
+    // }
+
+    // foreach (lc, pglab_ctx->invalid_paths)
+    // {
+    //     Path *invalid = (Path *) lfirst(lc);
+    //     Assert(invalid->pglab_private != NULL);
+    // }
+
+    // path_info = (PGLabPathInfo *) palloc0(sizeof(PGLabPathInfo));
+    // path_info->valid = satisfies_hints;
+    // path_info->original_cost = path->total_cost;
+    // path->pglab_private = path_info;
+
+    // if (satisfies_hints && path->total_cost > pglab_ctx->max_valid_cost)
+    // {
+    //     pglab_ctx->max_valid_cost = path->total_cost;
+    //     foreach (lc, pglab_ctx->invalid_paths)
+    //     {
+    //         PGLabPathInfo *invalid_info;
+    //         Path *invalid = (Path *) lfirst(lc);
+    //         invalid_info = (PGLabPathInfo *) invalid->pglab_private;
+    //         invalid->total_cost = invalid_info->original_cost + 1.01 * path->total_cost;
+    //     }
+    // }
+    // else if (!satisfies_hints)
+    // {
+    //     path->total_cost = path_info->original_cost + 1.01 * pglab_ctx->max_valid_cost;
+    //     pglab_ctx->invalid_paths = lappend(pglab_ctx->invalid_paths, path);
+    // }
+
+    // PG_ADD_PATH(parent_rel, path);
 }
 
 void
 hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *path)
 {
     OperatorHint *op_hint;
+    bool satisfies_hints;
+    PGLabContext *pglab_ctx;
+    PGLabPathInfo *path_info;
+    List *invalid_paths;
     ListCell *lc;
+    Cost max_valid_cost;
 
     CHECK_FOR_INTERRUPTS();
     if (!current_hints || !current_hints->contains_hint)
@@ -1977,48 +2279,113 @@ hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *path)
         return;
     }
 
+    satisfies_hints = path_has_valid_children(path);
+    if (!satisfies_hints)
+    {
+        pglab_trace("Rejecting path %s - has invalid children", path_to_string(path));
+    }
+
+
     if (!path_satisfies_joinprefixes(path, current_hints->join_prefixes))
     {
         pglab_trace("Rejecting partial path %s - does not satisfy join prefixes", path_to_string(path));
-        evict_path(path, true);
-        return;
+        satisfies_hints = false;
     }
 
     op_hint = NULL;
-    if (!path_satisfies_joinorder(path, current_hints->join_order_hint, &op_hint))
+    if (satisfies_hints && !path_satisfies_joinorder(path, current_hints->join_order_hint, &op_hint))
     {
         pglab_trace("Rejecting partial path %s - does not satisfy join order", path_to_string(path));
-        evict_path(path, true);
-        return;
+        satisfies_hints = false;
     }
 
-    if (!path_satisfies_operators(current_hints, path, op_hint, NULL, true))
+    if (satisfies_hints && !path_satisfies_operators(current_hints, path, op_hint))
     {
         pglab_trace("Rejecting partial path %s - does not satisfy operator hints", path_to_string(path));
-        evict_path(path, true);
-        return;
+        satisfies_hints = false;
     }
 
-    if (!partial_path_satisfies_parallelization(current_hints, path))
+    if (satisfies_hints && !partial_path_satisfies_parallelization(current_hints, path))
     {
         pglab_trace("Rejecting partial path %s - does not satisfy parallelization hints", path_to_string(path));
-        evict_path(path, true);
-        return;
+        satisfies_hints = false;
+    }
+
+    path_info = (PGLabPathInfo *) palloc0(sizeof(PGLabPathInfo));
+    path_info->valid = satisfies_hints;
+    path_info->original_cost = path->total_cost;
+    path->pglab_private = path_info;
+
+    if (satisfies_hints)
+    {
+        invalid_paths = NIL;
+        max_valid_cost = path->total_cost;
+    }
+    else
+    {
+        invalid_paths = list_make1(path);
+        max_valid_cost = 0;
     }
 
     foreach (lc, parent_rel->partial_pathlist)
     {
-        Path *placeholder = (Path *) lfirst(lc);
-        if (check_path_recursive(current_hints, placeholder, true, path, false))
-            continue;
+        Path *candidate;
+        PGLabPathInfo *candidate_info;
 
-        pglab_trace("Evicting partial placeholder path %s", path_to_string(placeholder));
-        evict_path(placeholder, true);
-        parent_rel->partial_pathlist = foreach_delete_current(parent_rel->partial_pathlist, lc);
+        candidate = (Path *) lfirst(lc);
+        candidate_info = (PGLabPathInfo *) candidate->pglab_private;
+        Assert(candidate_info != NULL);
+
+        if (candidate_info->valid)
+            max_valid_cost = Max(candidate->total_cost, max_valid_cost);
+        else
+            invalid_paths = lappend(invalid_paths, candidate);
     }
 
-    pglab_trace("Accepting partial path %s", path_to_string(path));
+    foreach (lc, invalid_paths)
+    {
+        Path *invalid;
+        PGLabPathInfo *invalid_info;
+
+        invalid = (Path *) lfirst(lc);
+        invalid_info = (PGLabPathInfo *) invalid->pglab_private;
+        invalid->total_cost = invalid_info->original_cost + 1.01 * max_valid_cost;
+    }
+
     PG_ADD_PARTIAL_PATH(parent_rel, path);
+
+    // pglab_ctx = (PGLabContext *) parent_rel->pglab_private;
+    // if (pglab_ctx == NULL)
+    // {
+    //     pglab_ctx = (PGLabContext *) palloc0(sizeof(PGLabContext));
+    //     pglab_ctx->invalid_paths = NIL;
+    //     pglab_ctx->max_valid_cost = 0;
+    //     parent_rel->pglab_private = pglab_ctx;
+    // }
+
+    // path_info = (PGLabPathInfo *) palloc0(sizeof(PGLabPathInfo));
+    // path_info->valid = satisfies_hints;
+    // path_info->original_cost = path->total_cost;
+    // path->pglab_private = path_info;
+
+    // if (satisfies_hints && path->total_cost > pglab_ctx->max_valid_cost)
+    // {
+    //     pglab_ctx->max_valid_cost = path->total_cost;
+    //     foreach (lc, pglab_ctx->invalid_paths)
+    //     {
+    //         PGLabPathInfo *invalid_info;
+    //         Path *invalid = (Path *) lfirst(lc);
+    //         invalid_info = (PGLabPathInfo *) invalid->pglab_private;
+    //         invalid->total_cost = invalid_info->original_cost + 1.01 * path->total_cost;
+    //     }
+    // }
+    // else if (!satisfies_hints)
+    // {
+    //     path->total_cost = path_info->original_cost + 1.01 * pglab_ctx->max_valid_cost;
+    //     pglab_ctx->invalid_paths = lappend(pglab_ctx->invalid_paths, path);
+    // }
+
+    // PG_ADD_PARTIAL_PATH(parent_rel, path);
 }
 
 int
