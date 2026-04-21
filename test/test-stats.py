@@ -10,7 +10,7 @@ from typing import Optional
 
 import psycopg
 
-from . import core
+import core
 
 DB_NAME = "stats-test"
 
@@ -38,114 +38,6 @@ def _init_db() -> None:
         os.system(f"zstd --decompress --force {data_file.resolve()}")
 
     os.system(f"psql -d {DB_NAME} -f stats/data/import.sql")
-
-
-def _explain_plan(query: str, cur: psycopg.Cursor) -> dict:
-    explain_query = f"EXPLAIN (FORMAT JSON) {query}"
-    cur.execute(explain_query)
-    plan_json = cur.fetchone()[0][0]
-    return plan_json["Plan"]
-
-
-def _build_intermediates(plan: dict) -> None:
-    if plan["Node Type"] in [
-        "Seq Scan",
-        "Index Scan",
-        "Index Only Scan",
-        "Bitmap Heap Scan",
-    ]:
-        intermediate = core.relname(plan)
-        plan["Intermediates"] = [intermediate]
-    else:
-        intermediates = [
-            _build_intermediates(child) or child["Intermediates"]
-            for child in plan.get("Plans", [])
-        ]
-        plan["Intermediates"] = [tab for subplan in intermediates for tab in subplan]
-
-
-def _determine_join_order(plan: dict) -> str:
-    if plan["Node Type"] in [
-        "Seq Scan",
-        "Index Scan",
-        "Index Only Scan",
-        "Bitmap Heap Scan",
-    ]:
-        return core.relname(plan)
-
-    nested = [_determine_join_order(subplan) for subplan in plan.get("Plans", [])]
-    match nested:
-        case [lhs, rhs]:
-            return f"({lhs} {rhs})"
-        case [child]:
-            return child
-        case _:
-            raise ValueError(f"Unexpected plan structure: {plan}")
-
-
-def _determine_operators(plan: dict, *, parallel_workers: int = 0) -> list[str]:
-    hints: list[str] = []
-    intermediate = " ".join(plan["Intermediates"])
-
-    parallel_subplan = False
-    match plan["Node Type"]:
-        case "Hash Join":
-            operator = "HashJoin"
-        case "Merge Join":
-            operator = "MergeJoin"
-        case "Nested Loop":
-            operator = "NestLoop"
-        case "Seq Scan":
-            operator = "SeqScan"
-        case "Index Scan":
-            operator = "IdxScan"
-        case "Index Only Scan":
-            operator = "IdxScan"
-        case "Bitmap Heap Scan":
-            operator = "BitmapScan"
-        case "Materialize":
-            operator = "Material"
-        case "Memoize":
-            operator = "Memo"
-        case "Aggregate" | "Hash" | "Sort" | "Limit" | "Bitmap Index Scan":
-            operator = None
-        case "Gather" | "Gather Merge":
-            operator = None
-            parallel_subplan = True
-            parallel_workers = plan.get("Workers Planned", 0)
-        case _:
-            raise ValueError(f"Unexpected plan node type: {plan['Node Type']}")
-
-    if operator is not None and parallel_workers:
-        hints.append(f"{operator}({intermediate} (workers={parallel_workers}))")
-    elif operator is not None:
-        hints.append(f"{operator}({intermediate})")
-    elif parallel_workers and not parallel_subplan:
-        hints.append(f"Result(workers={parallel_workers})")
-        parallel_subplan = False
-
-    if not parallel_subplan:
-        # reset parallel workers for child plans
-        parallel_workers = 0
-    for child in plan.get("Plans", []):
-        hints.extend(_determine_operators(child, parallel_workers=parallel_workers))
-
-    return hints
-
-
-def _extract_hint_set(plan: dict, *, plan_mode: str) -> str:
-    hints: list[str] = ["/*=pg_lab="]
-    if plan_mode:
-        hints.append(f"Config(plan_mode={plan_mode})")
-
-    _build_intermediates(plan)
-
-    join_order = _determine_join_order(plan)
-    hints.append(f"JoinOrder({join_order})")
-    hints.extend(_determine_operators(plan))
-
-    hints.append("*/")
-    return "\n".join(hints)
 
 
 class TestFullPlanHinting(core.PostgresTestCase):
@@ -182,12 +74,12 @@ class TestFullPlanHinting(core.PostgresTestCase):
 
     def _check_query(self, query: str, *, label: str) -> None:
         with self.conn.cursor() as cur:
-            native_plan = _explain_plan(query, cur)
-            hints = _extract_hint_set(native_plan, plan_mode="full")
+            native_plan = core.explain_plan(query, cur)
+            hints = core.extract_hint_set(native_plan, plan_mode="full")
             hinted_query = f"{hints}\n{query}"
 
             try:
-                hinted_plan = _explain_plan(hinted_query, cur)
+                hinted_plan = core.explain_plan(hinted_query, cur)
             except psycopg.errors.InternalError as e:
                 self.fail(f"Query {label}\n\n{hinted_query}\nFailed with error: {e}")
 
@@ -227,12 +119,12 @@ class CardinalityHintingTests(core.PostgresTestCase):
     def _check_query(
         self, query: str, *, card: int, intermediate: str, cur: psycopg.Cursor
     ) -> None:
-        native_plan = _explain_plan(query, cur)
+        native_plan = core.explain_plan(query, cur)
         native_cardinality = native_plan["Plan Rows"]
 
         hints = f"/*=pg_lab= Card({intermediate} #{card}) */"
         hinted_query = f"{hints}\n{query}"
-        hinted_plan = _explain_plan(hinted_query, cur)
+        hinted_plan = core.explain_plan(hinted_query, cur)
         hinted_cardinality = hinted_plan["Plan Rows"]
 
         self.assertNotEqual(
