@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import unittest
-from typing import Optional
+from typing import Optional, Self
 
 
 import psycopg
+
 
 def relname(plan: dict) -> Optional[str]:
     alias = plan.get("Alias")
@@ -18,6 +19,7 @@ def explain_plan(query: str, cur: psycopg.Cursor) -> dict:
     cur.execute(explain_query)
     plan_json = cur.fetchone()[0][0]
     return plan_json["Plan"]
+
 
 def _build_intermediates(plan: dict) -> None:
     if plan["Node Type"] in _ScanOps:
@@ -123,6 +125,162 @@ def extract_hint_set(plan: dict, *, plan_mode: str) -> str:
     hints.append("*/")
     return "\n".join(hints)
 
+
+class Plan:
+    def __init__(
+        self, node_type: str = "", *, relname: str = "", alias: str = ""
+    ) -> None:
+        self.node_type = node_type
+        self.relname = relname
+        self.alias = alias
+        self.children: list[Plan] = []
+        self.parent: Plan | None = None
+        self.parallel_workers: int = 0
+
+    def Aggregate(self) -> Plan:
+        child = Plan("Aggregate")
+        child.parent = self
+        self.children.append(child)
+        return child
+
+    def Gather(self, *, workers: int) -> Plan:
+        child = Plan("Gather")
+        child.parallel_workers = workers
+        child.parent = self
+        self.children.append(child)
+        return child
+
+    def GatherMerge(self, *, workers: int) -> Plan:
+        child = Plan("Gather Merge")
+        child.parallel_workers = workers
+        child.parent = self
+        self.children.append(child)
+        return child
+
+    def Memoize(self) -> Plan:
+        child = Plan("Memoize")
+        child.parent = self
+        self.children.append(child)
+        return child
+
+    def Materialize(self) -> Plan:
+        child = Plan("Materialize")
+        child.parent = self
+        self.children.append(child)
+        return child
+
+    def Sort(self) -> Plan:
+        child = Plan("Sort")
+        child.parent = self
+        self.children.append(child)
+        return child
+
+    def Limit(self) -> Plan:
+        child = Plan("Limit")
+        child.parent = self
+        self.children.append(child)
+        return child
+
+    def NestedLoop(self) -> JoinNode:
+        child = JoinNode("Nested Loop")
+        child.parent = self
+        self.children.append(child)
+        return child
+
+    def HashJoin(self) -> JoinNode:
+        child = JoinNode("Hash Join")
+        child.parent = self
+        self.children.append(child)
+        return child
+
+    def MergeJoin(self) -> JoinNode:
+        child = JoinNode("Merge Join")
+        child.parent = self
+        self.children.append(child)
+        return child
+
+    def SequentialScan(self, relname: str, *, alias: str = "") -> Plan:
+        child = Plan("Seq Scan", relname=relname, alias=alias)
+        child.parent = self
+        self.children.append(child)
+        return child
+
+    def IndexScan(self, relname: str, *, alias: str = "") -> Plan:
+        child = Plan("Index Scan", relname=relname, alias=alias)
+        child.parent = self
+        self.children.append(child)
+        return child
+
+    def IndexOnlyScan(self, relname: str, *, alias: str = "") -> Plan:
+        child = Plan("Index Only Scan", relname=relname, alias=alias)
+        child.parent = self
+        self.children.append(child)
+        return child
+
+    def BitmapHeapScan(self, relname: str, *, alias: str = "") -> Plan:
+        child = Plan("Bitmap Heap Scan", relname=relname, alias=alias)
+        child.parent = self
+        self.children.append(child)
+        return child
+
+    def BitmapIndexScan(self) -> Plan:
+        child = Plan("Bitmap Index Scan")
+        child.parent = self
+        self.children.append(child)
+        return child
+
+    def explain(self) -> dict:
+        root = self._traverse_upwards()
+        return root._build_internal()
+
+    def hint_set(self) -> str:
+        return extract_hint_set(self.explain(), plan_mode="full")
+
+    def _traverse_upwards(self) -> Plan:
+        node = self
+        while node.parent is not None:
+            node = node.parent
+        return node
+
+    def _build_internal(self) -> dict:
+        if not self.node_type:
+            assert len(self.children) == 1, (
+                "Expected exactly one child for dummy plan node"
+            )
+            return self.children[0]._build_internal()
+
+        plan: dict = {"Node Type": self.node_type}
+        if self.relname:
+            plan["Relation Name"] = self.relname
+        if self.alias:
+            plan["Alias"] = self.alias
+        if self.parallel_workers:
+            plan["Workers Planned"] = self.parallel_workers
+
+        if not self.children:
+            return plan
+
+        plan["Plans"] = [child._build_internal() for child in self.children]
+        return plan
+
+
+class JoinNode(Plan):
+    def __init__(self, node_type: str, *, relname: str = "") -> None:
+        super().__init__(node_type, relname=relname)
+
+    def outer(self, node: Plan) -> Self:
+        node = node._traverse_upwards()
+        node.parent = self
+        self.children.append(node)
+        return self
+
+    def inner(self, node: Plan) -> Self:
+        node = node._traverse_upwards()
+        node.parent = self
+        self.children.append(node)
+        return self
+
+
 class PostgresTestCase(unittest.TestCase):
     def assertPlansEqual(self, plan1: dict, plan2: dict, msg: str = "") -> None:
         if plan1["Node Type"] != plan2["Node Type"]:
@@ -135,11 +293,11 @@ class PostgresTestCase(unittest.TestCase):
         if rel1 != rel2:
             self.fail(f"{msg}\nScanning different relations: {plan1} != {plan2}")
 
-        childs1 = plan1.get("Plans", [])
-        childs2 = plan2.get("Plans", [])
-        if len(childs1) != len(childs2):
+        children1 = plan1.get("Plans", [])
+        children2 = plan2.get("Plans", [])
+        if len(children1) != len(children2):
             self.fail(
-                f"{msg}\nNumber of child plans differ: {len(childs1)} != {len(childs2)}"
+                f"{msg}\nNumber of child plans differ: {len(children1)} != {len(children2)}"
             )
-        for child1, child2 in zip(childs1, childs2):
+        for child1, child2 in zip(children1, children2):
             self.assertPlansEqual(child1, child2, msg=msg)

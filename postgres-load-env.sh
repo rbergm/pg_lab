@@ -21,19 +21,19 @@ if [ -n "$BASH_VERSION" -a "$BASH_SOURCE" = "$0" ] || [ -n "$ZSH_VERSION" -a "$Z
 fi
 
 if [ -z "$1" ] ; then
-	PG_INSTALL_DIR=$(ls -d $WD/pg-build/*/ | grep "pg-" | sort | tail -n 1)
+	PG_INSTALL_DIR=$(ls -d $PWD/pg-build/*/ | grep "pg-" | sort | tail -n 1)
 elif [[ "$1" = /* ]] ; then
 	PG_INSTALL_DIR="$1"
 else
-    if [ -z "$(ls -F $WD/pg-build/ | grep -E '/$')" ] ; then
+    if [ -z "$(ls -F $PWD/pg-build/ | grep -E '/$')" ] ; then
         echo "No PG installations found" 1>&2
         exit 1
     fi
 
-    if [ $(ls -d $WD/pg-build/*/ | grep "$1") ] ; then
+    if [ $(ls -d $PWD/pg-build/*/ | grep "$1") ] ; then
         PG_INSTALL_DIR="$WD/pg-build/$1"
     else
-        PG_INSTALL_DIR="$WD/$1"
+        PG_INSTALL_DIR="$PWD/$1"
     fi
 fi
 
@@ -46,7 +46,7 @@ if [ -z "$INIT" ] ; then
     export PG_INSTALL_DIR
 	export PG_BIN_PATH
 	export PGPORT
-	export PG_CTL_PATH="$WD"
+	export PG_CTL_PATH="$PWD"
 	export PGDATA="$PG_INSTALL_DIR/data"
 	export PATH="$PG_BIN_PATH:$PATH"
 	export LD_LIBRARY_PATH="$PG_INSTALL_DIR/lib:$LD_LIBRARY_PATH"

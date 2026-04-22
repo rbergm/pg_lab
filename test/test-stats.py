@@ -40,7 +40,39 @@ def _init_db() -> None:
     os.system(f"psql -d {DB_NAME} -f stats/data/import.sql")
 
 
-class TestFullPlanHinting(core.PostgresTestCase):
+class Fundamentals(core.PostgresTestCase):
+    def setUp(self) -> None:
+        _init_db()
+        self.conn = psycopg.connect(dbname=DB_NAME, host="localhost")
+
+    def tearDown(self):
+        try:
+            self.conn.close()
+        except psycopg.DatabaseError:
+            pass
+
+    def test_idxscan(self) -> None:
+        query = """
+            /*=pg_lab=
+              IdxScan(posts)
+             */
+            SELECT count(*) FROM posts;
+        """
+
+        expected_plan = core.Plan().Aggregate().IndexOnlyScan("posts").explain()
+
+        with self.conn.cursor() as cur:
+            actual_plan = core.explain_plan(query, cur)
+
+        self.assertPlansEqual(expected_plan, actual_plan)
+
+
+class ParallelizationHints(core.PostgresTestCase):
+    def test_parallel_scan(self) -> None:
+        pass
+
+
+class FullPlanHinting(core.PostgresTestCase):
     def __init__(
         self, methodName: str = "runTest", *, queries: Optional[set[str]] = None
     ) -> None:
@@ -54,7 +86,10 @@ class TestFullPlanHinting(core.PostgresTestCase):
         self._filter_workload()
 
     def tearDown(self) -> None:
-        self.conn.close()
+        try:
+            self.conn.close()
+        except psycopg.DatabaseError:
+            pass
 
     def test_plan_equivalence(self) -> None:
         for label, query in self.workload.items():
@@ -90,13 +125,16 @@ class TestFullPlanHinting(core.PostgresTestCase):
             )
 
 
-class CardinalityHintingTests(core.PostgresTestCase):
+class CardinalityHinting(core.PostgresTestCase):
     def setUp(self) -> None:
         _init_db()
         self.conn = psycopg.connect(dbname=DB_NAME, host="localhost")
 
     def tearDown(self):
-        self.conn.close()
+        try:
+            self.conn.close()
+        except psycopg.DatabaseError:
+            pass
 
     def test_plain_rel(self) -> None:
         query = "SELECT * FROM posts"
@@ -139,6 +177,72 @@ class CardinalityHintingTests(core.PostgresTestCase):
         )
 
 
+class RegressionTests(core.PostgresTestCase):
+    def setUp(self) -> None:
+        _init_db()
+        self.conn = psycopg.connect(dbname=DB_NAME, host="localhost")
+
+    def tearDown(self):
+        try:
+            self.conn.close()
+        except psycopg.DatabaseError:
+            pass
+
+    def test_bitmap_only_plan(self) -> None:
+        # Fixed in: da1e9916cf9284abe2f5fee540727596d3400934
+        query = """
+            /*=pg_lab=
+              Config(plan_mode=full)
+              JoinOrder((((v p) u) b))
+            
+              NestLoop(v p u b)
+              NestLoop(v p u (workers=1))
+              NestLoop(v p)
+            
+              SeqScan(v)
+              BitmapScan(p)
+              Memo(p)
+              BitmapScan(u)
+              Bitmapscan(b)
+             */
+            SELECT count(*)
+            FROM users u
+            JOIN badges b ON u.id = b.userid
+            JOIN  posts p ON p.owneruserid = u.id
+            JOIN  votes v ON p.id = v.postid
+            AND u.id = v.userid;
+        """
+
+        expected_plan = (
+            core.Plan()
+            .Aggregate()
+            .NestedLoop()
+            .outer(
+                core.Plan()
+                .Gather(workers=1)
+                .NestedLoop()
+                .outer(
+                    core.Plan()
+                    .NestedLoop()
+                    .outer(core.Plan().SequentialScan("votes", alias="v"))
+                    .inner(
+                        core.Plan()
+                        .Memoize()
+                        .BitmapHeapScan("posts", alias="p")
+                        .BitmapIndexScan()
+                    )
+                )
+                .inner(core.Plan().BitmapHeapScan("users", alias="u").BitmapIndexScan())
+            )
+            .inner(core.Plan().BitmapHeapScan("badges", alias="b").BitmapIndexScan())
+            .explain()
+        )
+
+        with self.conn.cursor() as cur:
+            actual_plan = core.explain_plan(query, cur)
+        self.assertPlansEqual(expected_plan, actual_plan)
+
+
 if __name__ == "__main__":
     description = textwrap.dedent("""
         Regression test suite for pg_lab plan hinting functionality.
@@ -164,7 +268,7 @@ if __name__ == "__main__":
     if test_queries:
         suite = unittest.TestSuite()
         suite.addTest(
-            TestFullPlanHinting(
+            FullPlanHinting(
                 methodName="test_plan_equivalence",
                 queries=test_queries,
             )

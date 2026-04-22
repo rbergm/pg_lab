@@ -2277,7 +2277,7 @@ hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *path)
     satisfies_hints = path_has_valid_children(path);
     if (!satisfies_hints)
     {
-        pglab_trace("Rejecting path %s - has invalid children", path_to_string(path));
+        pglab_trace("Rejecting partial path %s - has invalid children", path_to_string(path));
     }
 
 

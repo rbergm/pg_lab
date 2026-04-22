@@ -16,11 +16,10 @@ It has two main goals:
 These goals are achieved by introducing new extensions points into the original Postgres code base and shipping a hinting
 extension similar to [pg_hint_plan](https://github.com/ossc-db/pg_hint_plan).
 Essentially, this requires to maintain a fork of the Postgres source code (available at
-https://github.com/Optimizer-Playground/postgres-pglab).
+<https://github.com/Optimizer-Playground/postgres-pglab>).
 Our SIGMOD'2025 paper [^elephant] provides some insight into the motivation behind pg_lab.
 
 | **💻 [Installation](docs/installation.md)** | **📝 [Hinting](docs/hinting.md)** | **🛠️ [Extension Points](docs/extension_points.md)** |
-
 
 ## ⚡ Quick start
 
@@ -56,9 +55,8 @@ See the [Installation](docs/installation.md) documentation for more details on i
 and usage of pg_lab.
 
 > [!IMPORTANT]
-> pg_lab is currently only tested Ubuntu/WSL and MacOS.
+> pg_lab is currently only tested Ubuntu/WSL, Fedora, and MacOS.
 > Other platforms might (accidentally) work, but we cannot guarantee that.
-
 
 ## 📊 Comparison with pg_hint_plan
 
@@ -72,7 +70,7 @@ The downside of this approach is that we essentially require a fork of the upstr
 pg_lab.
 
 | Feature | pg_hint_plan | pg_lab |
-|---------|--------------|--------|
+| ------- | ------------ | ------ |
 | Forcing the join order | ✅ `Leading` hint | ✅ `JoinOrder` hint |
 | Forcing initial joins | ❔ `Leading` hint (only linear join orders) | ✅ `JoinPrefix` hint (including bushy joins) |
 | Forcing physical operators | ✅ Specific hints, e.g. `NestLoop(a b)` | ✅ Specific hints, e.g. `NestLoop(a b)` |
@@ -107,7 +105,6 @@ WHERE t.production_year > 2000;
 
 See the [Hinting](docs/hinting.md) documentation for more details on the hinting system and how to use it.
 
-
 ## 🤬 Issues
 
 Something feels wrong or broken, or a part of pg_lab is poorly documented or otherwise unclear?
@@ -115,7 +112,6 @@ Please don't hestitate to file an issue or open a pull request!
 pg_lab is not one-off software, but an ongoing research project.
 We are always happy to improve both pg_lab and its documentation and we feel that user experience (specifically,
 _your_ user experience) is a very important part of this.
-
 
 ## 🧰 Other utilities
 
@@ -136,10 +132,9 @@ The **`cout_star`** extension implements a simplified cost model inspired by $C_
 Our SIGMOD'2025 paper [^elephant] describes its design in depth.
 See the `extension/cout_star` directory for the source code and installation instructions.
 
-[^how-good]: Leis et al.: _How Good Are Query Optimizers, Really?_ (VLDB'2015) [🔗 Link](https://www.vldb.org/pvldb/vol9/p204-leis.pdf)
+[^how-good]: Leis et al.: _How Good Are Query Optimizers, Really?_ (VLDB'2015) [🔗 Paper](https://www.vldb.org/pvldb/vol9/p204-leis.pdf)
 
-[^elephant]: Bergmann et al.: _An Elephant Under The Microscope_ (SIGMOD'2025) [🔗 Link](https://dl.acm.org/doi/10.1145/3709659)
-
+[^elephant]: Bergmann et al.: _An Elephant Under The Microscope_ (SIGMOD'2025) [🔗 Paper](https://dl.acm.org/doi/10.1145/3709659)
 
 ## 🫶 Reference
 

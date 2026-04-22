@@ -35,15 +35,14 @@ When pg_lab detects a hint block, it will check whether the final execution plan
 If this should not be the case (due to the [Limitations](#hint-enforcement)), an error will be raised.
 This behavior can be disabled by setting `pg_lab.check_final_path` to _off_.
 
-
 ## Hint List
 
 | Hint | Description | Example |
-|------|-------------|---------|
+| ---- | ----------- | ------- |
 | `Config` | Sets options that confiure the entire optimization process | `Config(plan_mode=full)` |
 | `Card` | Overwrites the native cardinality estimate for a specific intermediate. | `Card(t mi ci #42000)` |
-| Physical operators, e.g., `HashJoin` | Control the access paths for specific intermediates | `IdxScan(t)`, `MergeJoin(t mi)` |
-| `JoinOrder` | Sets the join tree for the query | `JoinOrder(((t mi) ci))` |
+| Physical operators, e.g., `HashJoin` | Control the access paths for specific intermediates | `IdxScan(t)`, `MergeJoin(t mi)` |
+| `JoinOrder` | Sets the join tree for the query | `JoinOrder(((t mi) ci))` |
 | `JoinPrefix` | Configures the initial joins in a query, i.e. the leaf-portion of the join tree | `JoinPrefix((t mi))` |
 | `Set` | Makes temporary adjustments to GUC parameters | `Set(enable_nestloop = 'off')` |
 
@@ -61,7 +60,7 @@ JOIN movie_info
 ON t.id = movie_id
 ```
 
-Here, the _title_ table is referenced via its alias, while *movie_info* requires the full table name.
+Here, the _title_ table is referenced via its alias, while _movie\_info_ requires the full table name.
 
 To identify a specific intermediate, simply list the tables that form the intermediate:
 `Card(t mi ci #42000)` tells the optimizer that the relation that is constructed by joining `title t` with `movie_info mi`
@@ -75,7 +74,7 @@ are generated.
 
 The syntax of this hint is:
 
-```
+```text
 Config(<setting>+)
 
   setting ::= <plan_mode> | <exec_mode>
@@ -98,7 +97,7 @@ Currently, this affects materialization and memoization operators in two differe
 
 Compare the following queries:
 
-```
+```text
 imdb=# EXPLAIN /*=pg_lab= Config(plan_mode=anchored) NestLoop(t mi) SeqScan(mi) */
 imdb-# SELECT * FROM title t JOIN movie_info mi ON t.id = mi.movie_id WHERE t.production_year < 1930;
 
@@ -116,10 +115,10 @@ imdb-# SELECT * FROM title t JOIN movie_info mi ON t.id = mi.movie_id WHERE t.pr
                      Filter: (production_year < 1930)
 ```
 
-Here, the optimizer decided to insert an additional memoize-operator after scanning *movie_info*.
+Here, the optimizer decided to insert an additional memoize-operator after scanning _movie\_info_.
 In contrast,
 
-```
+```text
 imdb=# EXPLAIN /*=pg_lab= Config(plan_mode=full) NestLoop(t mi) SeqScan(mi) */
 imdb-# SELECT * FROM title t JOIN movie_info mi ON t.id = mi.movie_info WHERE t.production_year < 1930;
 
@@ -136,7 +135,7 @@ imdb-# SELECT * FROM title t JOIN movie_info mi ON t.id = mi.movie_info WHERE t.
 
 does not use the memo node. This is because the absence of the `Memo` hint told the optimizer to not use the operator.
 
-The *exec_mode* setting controls the creation of parallel plans:
+The _exec\_mode_ setting controls the creation of parallel plans:
 
 - `default` leaves this decision to the PG optimizer. It can generate a parallel or a sequential plan
 - `sequential` disables parallel plans
@@ -144,7 +143,7 @@ The *exec_mode* setting controls the creation of parallel plans:
 
 For example, consider
 
-```
+```text
 imdb=# EXPLAIN /*=pg_lab= Config(exec_mode=sequential) */
 imdb-# SELECT count(*) FROM title t JOIN movie_info mi ON t.id = mi.movie_id;
 
@@ -159,7 +158,7 @@ imdb-# SELECT count(*) FROM title t JOIN movie_info mi ON t.id = mi.movie_id;
 
 compared to
 
-```
+```text
 imdb=# EXPLAIN /*=pg_lab= Config(exec_mode=parallel) */
 imdb-# SELECT count(*) FROM title t JOIN movie_info mi ON t.id = mi.movie_id;
 
@@ -182,7 +181,7 @@ In the first example, the best sequential plan is selected, whereas the second e
 > [!NOTE]
 > `parallel` does not control which part of the query plan is being parallelized.
 > This has to be customized via [operator-level hints](#operator-level-hints).
-> Using operator-level hints implies parallel execution and overwrites the *exec_mode*.
+> Using operator-level hints implies parallel execution and overwrites the _exec\_mode_.
 
 ### Cardinality
 
@@ -190,7 +189,7 @@ The `Card` hint can be used to overwrite the PG native cardinality estimator and
 
 The syntax of this hint is:
 
-```
+```text
 Card(<intermediate> #<rows>)
 
 intermediate ::= <intermediate> <intermediate>
@@ -203,7 +202,7 @@ relations as well as base tables. Therefore, `Card(t #42)` is completely valid h
 
 The cardinality is interpreted as the size of the specific intermediate after all applicable filters have been applied.
 
-```
+```text
 imdb=# EXPLAIN /*=pg_lab= Card(t #4200000) */ SELECT * FROM title t WHERE t.production_year > 2010;
 
                                    QUERY PLAN
@@ -227,7 +226,7 @@ Operator hints influence the selection of physical operators, mostly for scans a
 For each supported operator, a different hint exists, similar to pg_hint_plan.
 They all follow the same basic syntax:
 
-```
+```text
 <operator name> ( <intermediate> <options>* )
 
 intermediate ::= <intermediate> <intermediate>
@@ -248,16 +247,16 @@ parallelization ::= (workers=int)
 Currently, pg_lab supports the following operators:
 
 | Operator | Description |
-|----------|-------------|
+| -------- | ----------- |
 | `SeqScan` | Sequential scan |
 | `IdxScan` | Index scan. The optimizer determines whether an index-only is possible. If it is, there really is no reason why a plain index scan should be used. |
 | `BitmapScan` | A bitmap scan first performs (one or multiple) index lookups, but does not fetch matching tuples right away. Instead, all matches are collected in a bitmap. This bitmap is then used to scan the relation sequentially. The optimizer can decide which indexes to use in the lookup phase and how they should be combined. |
 | `NestLoop` | Nested-loop join. Unless the [join order](#join-order) is also forced, the optimizer is free to decide which relation should be on the outer loop. |
-| `MergeJoin` |  (Sort-) Merge join. The optimizer determines whether any of the input relations require an explicit sort operation (and what the appropriate sort key is). Unless the [join order](#join-order) is also forced, the optimizer is free to decide which relation should be on the outer loop. |
-| `HashJoin` |  Hash join. Unless the [join order](#join-order) is also forced, the optimizer is free to decide which relation should be on the outer loop. This is especially important for hash joins, because the inner relation becomes the build side. The outer relation is the probe side. |
-| `Memo` | Insert a memoize operator on top of the specified relation. For example, `SeqScan(t) Memo(t)` indicates that _t_ should be scanned sequentially and its result should be memoized. Memoization essentially uses a cache to prevent repeated lookups of the same key values in a join. The optimizer is free to decide which key to use for the lookup (but see [Caveats](#hint-enforcement) and the interaction with the [planner mode](#configuration)). |
-| `Material` | Insert a materialization operator on top of the specified relation. For example, `IdxScan(mi) Material(mi)` indicates that all matching tuples from _mi_ should be collected first and stored in a materialized relation. When using this hint, see [Caveats](#hint-enforcement) and the interaction with the [planner mode](#configuration). |
-| `Result` | Catch all "operator" that applies to all operators after the final join, such as aggregation or sorting. See [below](#result-operator) for its usage. |
+| `MergeJoin` | (Sort-) Merge join. The optimizer determines whether any of the input relations require an explicit sort operation (and what the appropriate sort key is). Unless the [join order](#join-order) is also forced, the optimizer is free to decide which relation should be on the outer loop. |
+| `HashJoin` | Hash join. Unless the [join order](#join-order) is also forced, the optimizer is free to decide which relation should be on the outer loop. This is especially important for hash joins, because the inner relation becomes the build side. The outer relation is the probe side. |
+| `Memo` | Insert a memoize operator on top of the specified relation. For example, `SeqScan(t) Memo(t)` indicates that _t_ should be scanned sequentially and its result should be memoized. Memoization essentially uses a cache to prevent repeated lookups of the same key values in a join. The optimizer is free to decide which key to use for the lookup (but see [Caveats](#hint-enforcement) and the interaction with the [planner mode](#configuration-hint)). |
+| `Material` | Insert a materialization operator on top of the specified relation. For example, `IdxScan(mi) Material(mi)` indicates that all matching tuples from _mi_ should be collected first and stored in a materialized relation. When using this hint, see [Caveats](#hint-enforcement) and the interaction with the [planner mode](#configuration-hint). |
+| `Result` | Catch all "operator" that applies to all operators after the final join, such as aggregation or sorting. See [below](#result-operator) for its usage. |
 
 The most basic usage of these hints is to force the optimizer to use a specific operator when computing an intermediate.
 For example, `NestLoop(t mi)` tells the optimizer that the join between _t_ and _mi_ has to executed using a nested-loop
@@ -294,11 +293,11 @@ The `Result` pseudo-operator only supports the _workers_ option. Its main use is
 plan should be parallelized, e.g., including any aggregations, rather than the final join.
 
 To make this concept more clear, consider the following query based on the IMDB schema:
-*SELECT count(\*) FROM title t JOIN movie_info mi ON t.id = mi.movie_id*
+_SELECT count(\*) FROM title t JOIN movie_info mi ON t.id = mi.movie_id_
 Without the result hint, it would not be possible to enforce the parallel execution of the entire plan. This is because
 any operator hint like `MergeJoin(t mi (workers=12))` would indicate that the merge join should be executed in parallel:
 
-```
+```text
 imdb=# EXPLAIN /*=pg_lab= MergeJoin(t mi (workers=12)) */
 imdb-# SELECT count(*) FROM title t JOIN movie_info mi ON t.id = mi.movie_id
 
@@ -322,7 +321,7 @@ In contrast, `Result` applies to any operations that happen _after_ the last joi
 uses a rather simple execution model of "all joins first, then all grouping, aggregation, etc."). This way, the
 aggregation can be included in the parallel portion:
 
-```
+```text
 imdb=# EXPLAIN /*=pg_lab= Result(workers=12) MergeJoin(t mi) */
 imdb-# SELECT count(*) FROM title t JOIN movie_info mi ON t.id = mi.movie_id
 
@@ -346,12 +345,11 @@ any portion of this plan.
 Fixing this shortcoming would basically require the possibility to hint entire query plans.
 This is something that we are working on, but it is way more complicated than it might seem.
 
-
 ### Join order
 
 The join tree of a query can be set using the `JoinOrder` hint:
 
-```
+```text
 JoinOrder( <intermediate> | <base table> )
 
 intermediate ::= ( <intermediate> <intermediate> )
@@ -371,7 +369,7 @@ This is done using [operator-level hints](#operator-level-hints).
 Using appropriate nesting, the join order hint can be used to enforce bushy plans.
 Compare
 
-```
+```text
 imdb=# EXPLAIN /*=pg_lab= JoinOrder((ci (t mi))) */  -- bushy plan
 imdb-# SELECT count(*)
 imdb-# FROM title t JOIN movie_info mi ON t.id = mi.movie_id JOIN cast_info ci ON t.id = ci.movie_id
@@ -396,7 +394,7 @@ imdb-# WHERE t.production_year > 2000;
 
 to
 
-```
+```text
 imdb=# EXPLAIN /*=pg_lab= JoinOrder(((t mi) ci)) */ -- normal left-deep plan
 imdb-# SELECT count(*)
 imdb-# FROM title t JOIN movie_info mi ON t.id = mi.movie_id JOIN cast_info ci ON t.id = ci.movie_id
@@ -438,7 +436,7 @@ For bushy plans, the optimizer can also use the prefix in the inner portion of t
 
 To temporarily change GUC settings, pg_lab supports the `Set` hint:
 
-```
+```text
 Set( <guc name> = '<guc value>' )
 ```
 
@@ -447,7 +445,6 @@ is applied before the main planning begins and reset once the query terminates.
 
 For example, `Set(enable_nestloop = 'off')` disables the usage of nested-loop joins for the duration of the query.
 All subsequent queries are once again free to use nested-loop joins (provided that the GUC was enabled before).
-
 
 ## Parallel plans
 
@@ -468,7 +465,6 @@ By setting the parallel workers on `Result`, Postgres is forced to execute those
 Notice however, that it is currently not possible, to indicate which part of the post-processing is parallelized.
 For example, Postgres could parallelize the final aggregation as well as the final sorting, if both are requested.
 
-
 ## Limitations
 
 While using a Postgres fork allows us to achieve many things that would otherwise be impossible, the overall Postgres
@@ -488,7 +484,8 @@ This function is responsible (among other things) to store promising access path
 When the Postgres optimizer calls this function, pg_lab checks, whether the current path matches the constraints that are
 specified in the hint block.
 If the constraints are satisfied, Postgres continues with the normal path adding logic.
-If any constraint is violated, the path is discarded.
+Otherwise, we increase the path's cost to make it more expensive than any valid path.
+This effectively prevents the path from ever being chosen by the optimizer.
 
 While we think that this is a very elegant solution that allows for a clear implementation, there is one central downside:
 if the hint block demands the usage of a specific physical operator, but Postgres never considers the correponding
@@ -505,7 +502,7 @@ this decision.
 The problem with intercepting `add_path()` mostly appears in conjunction with hints for materialization or memoization, as
 in the following example:
 
-```
+```text
 imdb=# EXPLAIN
 imdb-# /*=pg_lab=
          JoinOrder((t mi))
@@ -528,19 +525,19 @@ imdb-# SELECT * FROM title t JOIN movie_info mi ON t.id = mi.movie_id;
 
 Postgres does not implement the dynamic programming-based plan search in the puristic textbook sense.
 This means, that it will not try to generate a memoize path on top of each intermediate.
-Instead, the operator is only considered if Postgres finds a suitable parameterization for the index scan on *movie_info*
+Instead, the operator is only considered if Postgres finds a suitable parameterization for the index scan on _movie\_info_
 (among other conditions, as encoded in `get_memoize_path()`).
 If this is not the case, Postgres will never try to add a memoize path and pg_lab's custom `add_path()` logic is never
 called.
 Therefore, the resulting plan will not match the hints.
 
 > [!TIP]
-> The [Hinting Mode](#configuration) setting can mitigate these issues somewhat, but not completely.
+> The [Hinting Mode](#configuration-hint) setting can mitigate these issues somewhat, but not completely.
 
 To a lesser extent, the same issue appears when using the other operator hints: if Postgres selects a different join order
 and the intermediate is not used, the operator cannot be enforced:
 
-```
+```text
 imdb=# EXPLAIN /*=pg_lab= JoinOrder(((mi ci) t)) NestLoop(mi t) */
 imdb-# SELECT * FROM title t
 imdb-# JOIN movie_info mi ON t.id = mi.movie_id
@@ -566,7 +563,7 @@ In this example, the join between _mi_ and _t_ is never performed. Hence, the ne
 
 Likewise, the following does not work because Postgres never considers index paths for the following query:
 
-```
+```text
 imdb=# EXPLAIN /*=pg_lab= IdxScan(t) */ SELECT * FROM title;
 
                             QUERY PLAN
@@ -592,7 +589,7 @@ reproduce a plan might not always work. This is because the optimizer still reta
 of the query plan. For example, consider query _q-10_ from the Stats benchmark. Natively, Postgres might produce a plan like
 the following:
 
-```
+```text
 stats=# EXPLAIN
 SELECT COUNT(*)
 FROM comments AS c, posts AS p, users AS u
@@ -631,7 +628,7 @@ WHERE c.UserId = u.Id
 
 Using hints for all of the major optimizer decisions results in a plan like the following:
 
-```
+```text
 stats=# EXPLAIN
 /*=pg_lab= Result(workers=2) NestLoop(c p u) HashJoin(c u) SeqScan(c) IdxScan(u) IdxScan(p) Memo(p) */
 SELECT COUNT(*)
@@ -684,7 +681,7 @@ This means that unknown hints or hints that do not match the expected syntax are
 
 For example, the following hint block will simply not do anything (the correct hint would have been `SeqScan`):
 
-```
+```text
 imdb=# EXPLAIN /*=pg_lab= SequentialScan(t) */ SELECT * FROM title t WHERE t.id < 42;
 
                                  QUERY PLAN
