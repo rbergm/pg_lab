@@ -1,6 +1,6 @@
 # pg_lab
 
-![GitHub License](https://img.shields.io/github/license/Optimizer-Playground//pg_lab?color=green)
+![GitHub License](https://img.shields.io/github/license/Optimizer-Playground/pg_lab?color=green)
 ![GitHub Release](https://img.shields.io/github/v/release/Optimizer-Playground/pg_lab?color=blue)
 
 <p align="center">
