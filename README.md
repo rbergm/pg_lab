@@ -1,7 +1,7 @@
 # pg_lab
 
-![GitHub License](https://img.shields.io/github/license/rbergm/pg_lab?color=green)
-![GitHub Release](https://img.shields.io/github/v/release/rbergm/pg_lab?color=blue)
+![GitHub License](https://img.shields.io/github/license/Optimizer-Playground//pg_lab?color=green)
+![GitHub Release](https://img.shields.io/github/v/release/Optimizer-Playground/pg_lab?color=blue)
 
 <p align="center">
   <img src="assets/pg_lab_logo.png" width="256" alt="The Logo of pg_lab: a blue elephant wearing a lab coat is surrounded by various reagents." />
@@ -122,7 +122,7 @@ Specifically, we provide an extension called **`pg_temperature`** that allows yo
 hot-start scenarios for your benchmarks.
 Take a look at `extension/pg_temperature` for more details.
 
-The **[PostBOUND project](https://github.com/rbergm/PostBOUND)** is a high-level framework to rapidly implement optimizer
+The **[PostBOUND project](https://github.com/Optimizer-Playground/PostBOUND)** is a high-level framework to rapidly implement optimizer
 prototypes in a much more high-level language (i.e. Python) and to compare different optimizer prototypes in a transparent
 and reproducible manner.
 This framework also provides a number of utilities to easily setup common benchmarks such as JOB, Stats or Stack (even

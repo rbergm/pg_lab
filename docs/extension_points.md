@@ -100,10 +100,10 @@ Their parameters and return types are the same as for the original functions.
 We did not implement hooks for every single operator yet (simple because there are too many that are rarely useful such as
 `cost_tidscan()`).
 If a cost hook that you need for your specific use case should be missing, feel free to
-[open an issue](https://github.com/rbergm/pg_lab/issues/new/choose) or create a PR[^creating-prs] right away.
+[open an issue](https://github.com/Optimizer-Playground/pg_lab/issues/new/choose) or create a PR[^creating-prs] right away.
 
 [^creating-prs]: On a technical level, we maintain
-  [our own Postgres fork](https://github.com/rbergm/pg_lab/issues/new/choose) to keep track of all modifications that are
+  [our own Postgres fork](https://github.com/Optimizer-Playground/pg_lab/issues/new/choose) to keep track of all modifications that are
   required to keep pg_lab running (and to integrate upstream changes cleanly). Therefore, the PR has to be opened against
   this repo.
 

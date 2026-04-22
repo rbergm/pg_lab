@@ -876,7 +876,7 @@ path_satisfies_joinorder(Path *path, JoinOrder *join_order, OperatorHint **op_hi
                     ereport(ERROR,
                             errmsg("In path_satisfies_operators: Unsupported Result path type."),
                             errdetail("Path: %s", pathtype_to_string(path)),
-                            errhint("This is a programming error. Please report at https://github.com/rbergm/pg_lab/issues."));
+                            errhint("This is a programming error. Please report at https://github.com/Optimizer-Playground/pg_lab/issues."));
             }
 
         }
@@ -884,7 +884,7 @@ path_satisfies_joinorder(Path *path, JoinOrder *join_order, OperatorHint **op_hi
             ereport(ERROR,
                     errmsg("In path_satisfies_joinorder: Unsupported path type."),
                     errdetail("Path: %s", pathtype_to_string(path)),
-                    errhint("This is a programming error. Please report at https://github.com/rbergm/pg_lab/issues."));
+                    errhint("This is a programming error. Please report at https://github.com/Optimizer-Playground/pg_lab/issues."));
             break;
     }
 
@@ -1068,7 +1068,7 @@ path_satisfies_operators(PlannerHints *hints, Path *path, OperatorHint *op_hint)
                     ereport(ERROR,
                             errmsg("In path_satisfies_operators: Unsupported Result path type."),
                             errdetail("Path: %s", pathtype_to_string(path)),
-                            errhint("This is a programming error. Please report at https://github.com/rbergm/pg_lab/issues."));
+                            errhint("This is a programming error. Please report at https://github.com/Optimizer-Playground/pg_lab/issues."));
             }
 
         }
@@ -1076,7 +1076,7 @@ path_satisfies_operators(PlannerHints *hints, Path *path, OperatorHint *op_hint)
             ereport(ERROR,
                     errmsg("In path_satisfies_operators: Unsupported path type."),
                     errdetail("Path: %s", pathtype_to_string(path)),
-                    errhint("This is a programming error. Please report at https://github.com/rbergm/pg_lab/issues."));
+                    errhint("This is a programming error. Please report at https://github.com/Optimizer-Playground/pg_lab/issues."));
             break;
     }
 
@@ -1242,7 +1242,7 @@ find_parallel_subpath(Path *path)
             {
                 ereport(ERROR,
                         errmsg("In find_parallel_subpath: AppendPath with partial paths found"),
-                        errhint("This is a programming error. Please report at https://github.com/rbergm/pg_lab/issues."));
+                        errhint("This is a programming error. Please report at https://github.com/Optimizer-Playground/pg_lab/issues."));
             }
             foreach(lc, apath->subpaths)
             {
@@ -1381,7 +1381,7 @@ find_parallel_subpath(Path *path)
                 default:
                     ereport(ERROR,
                         errmsg("Unsupported Result path type %s in find_parallel_subpath", pathtype_to_string(path)),
-                        errhint("This is a programming error. Please report at https://github.com/rbergm/pg_lab/issues."));
+                        errhint("This is a programming error. Please report at https://github.com/Optimizer-Playground/pg_lab/issues."));
                     return NULL;
             }
             return NULL;
@@ -1401,7 +1401,7 @@ find_parallel_subpath(Path *path)
         default:
             ereport(ERROR,
                 errmsg("Unsupported path type %s in find_parallel_subpath", pathtype_to_string(path)),
-                errhint("This is a programming error. Please report at https://github.com/rbergm/pg_lab/issues."));
+                errhint("This is a programming error. Please report at https://github.com/Optimizer-Playground/pg_lab/issues."));
             return NULL;
     }
 
@@ -1545,7 +1545,7 @@ path_satisfies_parallelization(PlannerHints *hints, Path *path)
 
     ereport(ERROR,
             errmsg("In path_satisfies_parallelization: join order traversal failed unexpectedly."),
-            errhint("This is a programming error. Please report at https://github.com/rbergm/pg_lab/issues."));
+            errhint("This is a programming error. Please report at https://github.com/Optimizer-Playground/pg_lab/issues."));
     return false;
 }
 
@@ -1897,14 +1897,14 @@ check_path_recursive(PlannerHints *hints, Path *path, bool is_partial)
                     ereport(ERROR,
                             errmsg("In check_path: Unsupported Result path type."),
                             errdetail("Path: %s", path_to_string(path)),
-                            errhint("This is a programming error. Please report at https://github.com/rbergm/pg_lab/issues."));
+                            errhint("This is a programming error. Please report at https://github.com/Optimizer-Playground/pg_lab/issues."));
             }
         }
         default:
             ereport(ERROR,
                     errmsg("In check_path: Unsupported path type."),
                     errdetail("Path: %s", path_to_string(path)),
-                    errhint("This is a programming error. Please report at https://github.com/rbergm/pg_lab/issues."));
+                    errhint("This is a programming error. Please report at https://github.com/Optimizer-Playground/pg_lab/issues."));
             return false;
     }
 }
@@ -2018,7 +2018,7 @@ hint_aware_final_path_callback(PlannerInfo *root, RelOptInfo *rel, Path *best_pa
             ereport(ERROR,
                     errmsg("pg_lab could not find a valid path that satisfies all hints."),
                     errdetail("Final path was %s", path_to_string(best_path)),
-                    errhint("If you are certain that the hinted query should be valid, please open an issue at https://github.com/rbergm/pg_lab/issues."));
+                    errhint("If you are certain that the hinted query should be valid, please open an issue at https://github.com/Optimizer-Playground/pg_lab/issues."));
     }
 
     if (prev_final_path_callback)

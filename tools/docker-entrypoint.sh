@@ -10,7 +10,7 @@ if [ -z "$(ls /pg_lab)" ] ; then
     sudo chown -R $USERNAME:$USERNAME /pg_lab
     sudo chmod -R 755 /pg_lab
 
-    git clone --depth 1 --branch=main https://github.com/rbergm/pg_lab /pg_lab
+    git clone --depth 1 --branch=main https://github.com/Optimizer-Playground/pg_lab /pg_lab
     if [ "$DEBUG" = "true" ]; then
         ./postgres-setup.sh --stop --pg-ver "$PGVER" --debug --remote-password "$USERNAME"
     else
@@ -22,7 +22,7 @@ if [ -z "$(ls /pg_lab)" ] ; then
 
     if [ "$SETUP_JOB" = "true" ] | [ "$SETUP_IMDB" = "true" ] ; then
         echo "[setup] Setting up JOB/IMDB database"
-        wget https://raw.githubusercontent.com/rbergm/PostBOUND/refs/heads/main/db-support/postgres/workload-job-setup.sh -O /pg_lab/workload-job-setup.sh
+        wget https://raw.githubusercontent.com/Optimizer-Playground/PostBOUND/refs/heads/main/db-support/postgres/workload-job-setup.sh -O /pg_lab/workload-job-setup.sh
         chmod +x /pg_lab/workload-job-setup.sh
         mkdir -p /pg_lab/datasets/
         /pg_lab/workload-job-setup.sh -d /pg_lab/datasets/imdb
@@ -30,7 +30,7 @@ if [ -z "$(ls /pg_lab)" ] ; then
 
     if [ "$SETUP_STATS" = "true" ] ; then
         echo "[setup] Setting up Stats database"
-        wget https://raw.githubusercontent.com/rbergm/PostBOUND/refs/heads/main/db-support/postgres/workload-stats-setup.sh -O /pg_lab/workload-stats-setup.sh
+        wget https://raw.githubusercontent.com/Optimizer-Playground/PostBOUND/refs/heads/main/db-support/postgres/workload-stats-setup.sh -O /pg_lab/workload-stats-setup.sh
         chmod +x /pg_lab/workload-stats-setup.sh
         mkdir -p /pg_lab/datasets/
         /pg_lab/workload-stats-setup.sh -d /pg_lab/datasets/stats
@@ -38,7 +38,7 @@ if [ -z "$(ls /pg_lab)" ] ; then
 
     if [ "$SETUP_STACK" = "true" ] ; then
         echo "[setup] Setting up Stack database"
-        wget https://raw.githubusercontent.com/rbergm/PostBOUND/refs/heads/main/db-support/postgres/workload-stack-setup.sh -O /pg_lab/workload-stack-setup.sh
+        wget https://raw.githubusercontent.com/Optimizer-Playground/PostBOUND/refs/heads/main/db-support/postgres/workload-stack-setup.sh -O /pg_lab/workload-stack-setup.sh
         chmod +x /pg_lab/workload-stack-setup.sh
         mkdir -p /pg_lab/datasets/
         /pg_lab/workload-stack-setup.sh -d /pg_lab/datasets/stack
