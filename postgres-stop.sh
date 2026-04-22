@@ -18,11 +18,8 @@ if [ -n "$BASH_VERSION" -a "$BASH_SOURCE" = "$0" ] || [ -n "$ZSH_VERSION" -a "$Z
     echo "WARNING: This script should be sourced to remove the Postgres binaries from PATH. Please run it as . ./postgres-start.sh" 1>&2
 fi
 
-WD=$(pwd)
-
 . ./postgres-load-env.sh "$1"
 
-cd $PG_INSTALL_DIR
 pg_ctl -D $PG_INSTALL_DIR/data stop
 export PATH="${PATH//$PG_BIN_PATH:}"
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH//$PG_INSTALL_DIR/lib:}"
@@ -40,5 +37,3 @@ fi
 if [ -z "$PGDATA" ] ; then
     unset PGDATA
 fi
-
-cd $WD

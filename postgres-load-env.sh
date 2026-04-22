@@ -20,8 +20,6 @@ if [ -n "$BASH_VERSION" -a "$BASH_SOURCE" = "$0" ] || [ -n "$ZSH_VERSION" -a "$Z
     exit 1
 fi
 
-WD=$(pwd)
-
 if [ -z "$1" ] ; then
 	PG_INSTALL_DIR=$(ls -d $WD/pg-build/*/ | grep "pg-" | sort | tail -n 1)
 elif [[ "$1" = /* ]] ; then
@@ -40,8 +38,6 @@ else
 fi
 
 PG_INSTALL_DIR=${PG_INSTALL_DIR%/}
-cd $PG_INSTALL_DIR
-
 PG_BIN_PATH="$PG_INSTALL_DIR/bin"
 INIT=$(echo "$PATH" | grep "$PG_BIN_PATH")
 PGPORT=$(grep "port =" $PG_INSTALL_DIR/data/postgresql.conf | awk '{print $3}')
@@ -56,5 +52,3 @@ if [ -z "$INIT" ] ; then
 	export LD_LIBRARY_PATH="$PG_INSTALL_DIR/lib:$LD_LIBRARY_PATH"
 	export C_INCLUDE_PATH="$PG_INSTALL_DIR/include/server:$C_INCLUDE_PATH"
 fi
-
-cd $WD

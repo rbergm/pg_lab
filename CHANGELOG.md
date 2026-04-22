@@ -12,6 +12,11 @@ To view the changelog of older versions, please refer to the [HISTORY.md](HISTOR
 
 # Version 0.5.2
 
+## 📰 Updates
+
+- The pg_lab management utilities (_postgres-start.sh_, etc.) no longer change the current working directory of the shell.
+  `cd -` now works without ending up in some internal pg_lab directory.
+
 ## 🏥 Fixes
 
 - Reworked the internal path pruning logic to enforce hint compliance. Our rework switches from a pruning-based model

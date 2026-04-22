@@ -18,10 +18,6 @@ if [ -n "$BASH_VERSION" -a "$BASH_SOURCE" = "$0" ] || [ -n "$ZSH_VERSION" -a "$Z
     echo "WARNING: This script should be sourced to make the Postgres binaries available in PATH. Please run it as . ./postgres-start.sh" 1>&2
 fi
 
-WD=$(pwd)
-
 . ./postgres-load-env.sh "$1"
 
-cd $PG_INSTALL_DIR
-pg_ctl -D $PG_INSTALL_DIR/data -l pg.log start
-cd $WD
+pg_ctl -D $PG_INSTALL_DIR/data -l $PG_INSTALL_DIR/pg.log start
