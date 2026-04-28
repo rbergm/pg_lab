@@ -197,13 +197,7 @@ export C_INCLUDE_PATH="$PG_TARGET_DIR/include/server:$C_INCLUDE_PATH"
 
 echo ".. Installing pg_lab extension"
 PGLAB_DIR=$WD/extensions/pg_lab
-mkdir -p $PGLAB_DIR/build && cd $PGLAB_DIR/build
-
-if [ "$DEBUG_BUILD" = "true" ] ; then
-    cmake -DCMAKE_BUILD_TYPE=Debug ..
-else
-    cmake -DCMAKE_BUILD_TYPE=Release ..
-fi
+cd $PGLAB_DIR/build
 make clean && make -j $MAKE_CORES
 
 echo ".. Installing pg_temperature extension"

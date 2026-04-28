@@ -1,1 +1,6 @@
 .antlr/
+.deps/
+build/
+src/hintparse.c
+src/hintparse.h
+src/hintscan.c
