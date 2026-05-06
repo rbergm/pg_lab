@@ -42,6 +42,8 @@ extern char *current_query_string;
 extern TempGUC **guc_cleanup_actions;
 extern int n_cleanup_actions;
 
+extern PlannerInfo *current_planner_root;
+
 typedef enum HintMode
 {
     HINTMODE_FULL,
@@ -205,6 +207,7 @@ typedef struct PlannerHints
 
 } PlannerHints;
 
+extern PlannerHints* current_planner_hints;
 
 extern PlannerHints* init_hints(const char *raw_query);
 extern void free_hints(PlannerHints *hints);

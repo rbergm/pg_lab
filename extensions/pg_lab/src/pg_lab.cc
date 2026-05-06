@@ -164,10 +164,10 @@ char *current_query_string = NULL;
 * We explicitly store the PlannerInfo as a static variable because some low-level routines in the planner do not
 * receive it as an argument. But, some of our hint-aware variants of these routines need it.
 */
-static PlannerInfo  *current_planner_root = NULL;
+PlannerInfo  *current_planner_root = NULL;
 
 /* The hints that are available for the current query. */
-static PlannerHints *current_hints = NULL;
+PlannerHints *current_hints = NULL;
 
 #define IS_HINTED() (current_hints != NULL && current_hints->contains_hint)
 
@@ -2195,10 +2195,10 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *path)
      * valid path if there is one.
      * We achieve this by using the maximum cost of any valid path as a baseline. Each invalid path gets this cost added
      * to its original cost.
-     * 
+     *
      * An apparently simpler solution would be to just evict the invalid paths.
      * See description of commit da1e9916cf9284abe2f5fee540727596d3400934 for why this is not possible.
-     * 
+     *
      * What is even worse, we also cannot really cache the valid/invalid paths.
      * Instead, we need to re-compute the respective list each time. This is because the Postgres optimizer might itself
      * prune inferior paths and there isn't really a good way for us to keep track of this. Therefore, our list might
@@ -2852,50 +2852,6 @@ hint_aware_final_cost_mergejoin(PlannerInfo *root, MergePath *path,
         raw_path->startup_cost = startup_cost;
     if (!isnan(total_cost))
         raw_path->total_cost = total_cost;
-}
-
-static char *
-debug_reloptinfo(RelOptInfo *rel)
-{
-    StringInfo buf;
-    int i = -1;
-    buf = makeStringInfo();
-
-    while ((i = bms_next_member(rel->relids, i)) >= 0)
-    {
-        RangeTblEntry *rte;
-        rte = current_planner_root->simple_rte_array[i];
-        if (!rte)
-            continue;
-
-        appendStringInfo(buf, "%s ", rte->eref->aliasname);
-    }
-
-    return buf->data;
-}
-
-static Path *
-debug_fetch_outer(Path *path)
-{
-    JoinPath *jpath;
-
-    if (!IsAJoinPath(path))
-        return NULL;
-
-    jpath = (JoinPath *) path;
-    return jpath->outerjoinpath;
-}
-
-static Path *
-debug_fetch_inner(Path *path)
-{
-    JoinPath *jpath;
-
-    if (!IsAJoinPath(path))
-        return NULL;
-
-    jpath = (JoinPath *) path;
-    return jpath->innerjoinpath;
 }
 
 

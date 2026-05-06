@@ -92,6 +92,7 @@ add_library(pg_lab MODULE
     src/pg_lab.cc
     src/hints.cc
     src/hint_parser.cc
+    src/debugging.cc
     ${ANTLR_HintBlockGrammar_CXX_OUTPUTS}
 )
 
